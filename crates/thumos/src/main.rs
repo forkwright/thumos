@@ -86,6 +86,17 @@ compile_error!(
     "kfault-probe is a CI fault-injection harness; a production image must not contain a deliberate kernel fault."
 );
 
+// WHY (#871): the uaccess probe deliberately bypasses the full-range preflight
+// and faults both unprivileged copy instructions. It exists only to falsify the
+// data-abort fixup under QEMU and must never enter a shippable image.
+#[cfg(all(feature = "uaccess-probe", feature = "production"))]
+compile_error!(
+    "uaccess-probe is a CI fault-injection harness and must not ship in a production image."
+);
+
+#[cfg(all(feature = "uaccess-probe", not(feature = "qemu")))]
+compile_error!("uaccess-probe is meaningful only with the QEMU target witness (--features qemu).");
+
 // WHY (#492 fault supervision): crashloop-probe makes kinit spawn + supervise a
 // program that faults on every launch, purely so CI can witness the restart
 // policy. A production image must never boot a deliberate crash loop.

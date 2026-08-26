@@ -210,7 +210,7 @@ fidelity = "XTS confidentiality mechanics are host+fuzz covered; #866 owns the p
 name = "exceptions"
 tests = 0
 mechanism = "target"
-witness = "boot.sh+kfault.sh"
+witness = "boot.sh+kfault.sh+uaccess.sh"
 
 [[module]]
 name = "exceptions_stub"
@@ -220,8 +220,9 @@ fidelity = "the stub IS the host fixture for the exceptions module — see excep
 
 [[module]]
 name = "fd"
-tests = 71
+tests = 73
 mechanism = "host"
+fidelity = "copyout-fault tests preserve file data and offsets; /dev/urandom may advance volatile PRNG state if a transfer faults after prevalidation"
 
 [[module]]
 name = "firewall"
@@ -236,7 +237,7 @@ mechanism = "host"
 
 [[module]]
 name = "futex"
-tests = 7
+tests = 8
 mechanism = "both"
 witness = "sleep.sh"
 fidelity = "WAIT/WAKE logic host-covered; the IRQ-masked sleep/wake path is sleep-witnessed"
@@ -400,9 +401,10 @@ mechanism = "host"
 
 [[module]]
 name = "memguard"
-tests = 28
-mechanism = "host"
-fidelity = "The numeric gate and the permission logic are fully host-covered: `pl0_grants` is exercised against descriptors minted by the real `prot_to_l2_flags`, and `range_grants` is driven over a descriptor-reader closure, so hole detection, unaligned starts and mid-page ends are proved without an MMU. What host tests cannot reach is the live walk itself — `validate_user_range` reads the caller's real L2 entries, and on host there is no user address space, so it takes the numeric path. A target witness that proves a PROT_NONE or read-only user buffer is refused on device is still owed; #871 owns it."
+tests = 31
+mechanism = "both"
+witness = "uaccess.sh"
+fidelity = "Host tests pin descriptor permission decoding (including execute-only data denial), holes/boundaries, the live-VAS versus bootstrap identity-map policy split, and post-validation copyout rollback through fault injection. QEMU drives real low anonymous mappings through UART write and clock_gettime syscalls (RW positive controls, PROT_NONE, read-only direction split, unmapped and cross-page tails), proves the inexpressible ARMv7 execute-only mapping is refused, then separately bypasses prevalidation to fault and recover the actual ARM LDRBT/STRBT transfer instructions. kfault.sh remains the unrelated-PL1-fault negative control."
 
 [[module]]
 name = "meshtastic"
@@ -461,9 +463,9 @@ fidelity = "The policy is pure arithmetic over typed digits, so host tests prove
 
 [[module]]
 name = "pipe"
-tests = 14
+tests = 16
 mechanism = "host"
-fidelity = "sys_pipe validates its output range before allocating any state, and the ordering — not just the errno — is host-proven by asserting the pipe pool is untouched after a refused call. What host tests cannot reach is the caller-VAS half: with no MMU and no user address space they exercise only the numeric gate, so PROT_NONE and read-only destinations are covered by memguard's own tests rather than through sys_pipe. #871 owns the remaining fault-contained copyin/copyout."
+fidelity = "Host tests prove prevalidation leaves the pool untouched, an injected post-validation fd-pair copyout fault rolls back pipe/fd/OFD publication, and an injected read copyout fault preserves queued bytes for the next read. Caller-VAS permission and real ARM abort recovery are exercised through memguard's uaccess.sh target witness; no QEMU pipe transport scenario is claimed by this row."
 
 [[module]]
 name = "power"
@@ -632,8 +634,9 @@ witness = "boot.sh"
 
 [[module]]
 name = "socket"
-tests = 24
+tests = 25
 mechanism = "host"
+fidelity = "copyout-fault tests retain TCP/UDP queues; disjoint recvfrom outputs are prevalidated but cannot be byte-atomic across a late transfer fault"
 
 [[module]]
 name = "status_bar"
@@ -649,9 +652,9 @@ witness = "crashloop.sh"
 
 [[module]]
 name = "syscall"
-tests = 70
+tests = 72
 mechanism = "both"
-witness = "boot.sh+fork.sh+exec.sh+sleep.sh"
+witness = "boot.sh+fork.sh+exec.sh+sleep.sh+uaccess.sh"
 fidelity = "trap entry / exception return is witness-only (PL0 probes); host tests cover dispatch logic via the uart stub"
 
 [[module]]
@@ -679,8 +682,9 @@ mechanism = "host"
 [[module]]
 name = "time"
 tests = 13
-mechanism = "host"
-fidelity = "ClockManager wiring and offset math are host/QEMU covered; #861 owns source/authentication/freshness policy and explicit unavailable civil time"
+mechanism = "both"
+witness = "uaccess.sh"
+fidelity = "Host tests cover ClockManager wiring and offset math; uaccess.sh drives a real clock_gettime copyout into RW and read-only caller mappings to prove direction enforcement. #861 owns source/authentication/freshness policy and explicit unavailable civil time"
 
 [[module]]
 name = "timer"

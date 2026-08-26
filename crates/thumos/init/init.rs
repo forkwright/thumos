@@ -37,6 +37,25 @@ unsafe fn sys_write(fd: u32, buf: *const u8, len: u32) -> u32 {
     ret
 }
 
+/// clock_gettime(clock_id, timespec*) -> 0 or negative errno.
+#[cfg(thumos_init_uaccess)]
+#[inline(always)]
+unsafe fn sys_clock_gettime(clock_id: u32, timespec: *mut u8) -> u32 {
+    let ret;
+    // SAFETY: issues SVC #70 per the thumos ABI; the witness deliberately
+    // supplies RW and RO destinations to exercise direction enforcement.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("r7") 70u32,
+            inlateout("r0") clock_id => ret,
+            in("r1") timespec,
+            options(nostack),
+        );
+    }
+    ret
+}
+
 /// sleep(ms): suspend this process for at least `ms` milliseconds (#477 harness).
 ///
 /// # Safety
@@ -252,7 +271,7 @@ unsafe fn sys_execve(path: *const u8, argv: u32, envp: u32) -> u32 {
 ///
 /// # Safety
 /// Requests a new user mapping; the returned VA is valid only if != u32::MAX.
-#[cfg(thumos_init_guard)]
+#[cfg(any(thumos_init_guard, thumos_init_uaccess))]
 #[inline(always)]
 unsafe fn sys_mmap(addr: u32, len: u32, prot: u32, flags: u32) -> u32 {
     let ret;
@@ -275,7 +294,7 @@ unsafe fn sys_mmap(addr: u32, len: u32, prot: u32, flags: u32) -> u32 {
 ///
 /// # Safety
 /// Changes the protection of an existing user mapping.
-#[cfg(thumos_init_guard)]
+#[cfg(any(thumos_init_guard, thumos_init_uaccess))]
 #[inline(always)]
 unsafe fn sys_mprotect(addr: u32, len: u32, prot: u32) -> u32 {
     let ret;
@@ -291,6 +310,34 @@ unsafe fn sys_mprotect(addr: u32, len: u32, prot: u32) -> u32 {
         );
     }
     ret
+}
+
+/// munmap(addr, len) -> 0 on success, else errno.
+#[cfg(thumos_init_uaccess)]
+#[inline(always)]
+unsafe fn sys_munmap(addr: u32, len: u32) -> u32 {
+    let ret;
+    // SAFETY: SVC #21 per the thumos ABI.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("r7") 21u32,
+            inlateout("r0") addr => ret,
+            in("r1") len,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[cfg(thumos_init_uaccess)]
+unsafe fn uaccess_fail(message: &[u8]) -> ! {
+    // SAFETY: message is a readable literal in this image; exit terminates the
+    // dedicated witness process after emitting a machine-readable failure.
+    unsafe {
+        sys_write(1, message.as_ptr(), u32::try_from(message.len()).unwrap_or(0));
+        sys_exit(1);
+    }
 }
 
 /// brk(new_break) -> the (possibly updated) program break. The kernel reports
@@ -396,6 +443,116 @@ pub extern "C" fn _start() -> ! {
         // #487: no-op unless an isolation-probe variant is compiled, in which
         // case this faults at PL0 before the write.
         isolation_probe();
+        // #871 uaccess matrix. Two separate anonymous mappings are adjacent
+        // under first-fit mmap, allowing a real cross-page syscall range while
+        // mprotect (whose ABI operates on one recorded mapping) changes only
+        // the second page. Every rejected call must return EFAULT and this same
+        // PL0 process must continue to the final marker.
+        #[cfg(thumos_init_uaccess)]
+        {
+            const PAGE: u32 = 4096;
+            const PROT_NONE: u32 = 0;
+            const PROT_READ: u32 = 1;
+            const PROT_RW: u32 = 3;
+            const PROT_EXEC: u32 = 4;
+            const MAP_ANON_FD_NEG1: u32 = 0xFFFF_0020;
+            const EFAULT: u32 = 0u32.wrapping_sub(14);
+            const EINVAL: u32 = 0u32.wrapping_sub(22);
+
+            let first = sys_mmap(0, PAGE, PROT_RW, MAP_ANON_FD_NEG1);
+            let second = sys_mmap(0, PAGE, PROT_RW, MAP_ANON_FD_NEG1);
+            if first == u32::MAX || second != first.wrapping_add(PAGE) {
+                uaccess_fail(b"FAIL uaccess: adjacent mmap control\n");
+            }
+            let first_ptr = usize::try_from(first).unwrap_or(0) as *mut u8;
+            let second_ptr = usize::try_from(second).unwrap_or(0) as *mut u8;
+
+            // Positive controls: this low anonymous VAS lies below KERNEL_END,
+            // so both directions succeeding prove #890's stale identity-DRAM
+            // predicate is not what decides the later rejection cases.
+            if sys_clock_gettime(1, first_ptr) != 0 {
+                uaccess_fail(b"FAIL uaccess: RW copyout control\n");
+            }
+            let ro_marker = b"uaccess: read-only source accepted\n";
+            core::ptr::copy_nonoverlapping(ro_marker.as_ptr(), first_ptr, ro_marker.len());
+            core::ptr::write_volatile(first_ptr.add(PAGE as usize - 2), b'X');
+            core::ptr::write_volatile(first_ptr.add(PAGE as usize - 1), b'Y');
+            core::ptr::write_volatile(second_ptr, b'Z');
+            core::ptr::write_volatile(second_ptr.add(1), b'W');
+            if sys_write(1, first_ptr, u32::try_from(ro_marker.len()).unwrap_or(0))
+                != u32::try_from(ro_marker.len()).unwrap_or(0)
+            {
+                uaccess_fail(b"FAIL uaccess: RW copyin control\n");
+            }
+            let rw_ok = b"uaccess: anonymous RW controls passed\n";
+            sys_write(1, rw_ok.as_ptr(), u32::try_from(rw_ok.len()).unwrap_or(0));
+
+            if sys_mprotect(second, PAGE, PROT_NONE) != 0 {
+                uaccess_fail(b"FAIL uaccess: PROT_NONE setup\n");
+            }
+            if sys_write(1, second_ptr, 1) != EFAULT {
+                uaccess_fail(b"FAIL uaccess: PROT_NONE source not EFAULT\n");
+            }
+            if sys_write(1, first_ptr.add(PAGE as usize - 2), 4) != EFAULT {
+                uaccess_fail(b"FAIL uaccess: cross-page tail not EFAULT\n");
+            }
+            let none_ok = b"uaccess: PROT_NONE and cross-page rejected\n";
+            sys_write(
+                1,
+                none_ok.as_ptr(),
+                u32::try_from(none_ok.len()).unwrap_or(0),
+            );
+
+            // ARMv7 cannot express instruction-fetch without data-read
+            // permission. The mmap ABI therefore refuses execute-only rather
+            // than silently granting READ or creating an unusable mapping.
+            if sys_mprotect(second, PAGE, PROT_EXEC) != EINVAL {
+                uaccess_fail(b"FAIL uaccess: execute-only mapping not refused\n");
+            }
+            let exec_only_ok = b"uaccess: execute-only mapping refused\n";
+            sys_write(
+                1,
+                exec_only_ok.as_ptr(),
+                u32::try_from(exec_only_ok.len()).unwrap_or(0),
+            );
+
+            if sys_mprotect(first, PAGE, PROT_READ) != 0 {
+                uaccess_fail(b"FAIL uaccess: read-only setup\n");
+            }
+            if sys_write(1, first_ptr, u32::try_from(ro_marker.len()).unwrap_or(0))
+                != u32::try_from(ro_marker.len()).unwrap_or(0)
+            {
+                uaccess_fail(b"FAIL uaccess: read-only source rejected\n");
+            }
+            if sys_clock_gettime(1, first_ptr) != EFAULT {
+                uaccess_fail(b"FAIL uaccess: read-only destination not EFAULT\n");
+            }
+            let direction_ok = b"uaccess: direction split enforced\n";
+            sys_write(
+                1,
+                direction_ok.as_ptr(),
+                u32::try_from(direction_ok.len()).unwrap_or(0),
+            );
+
+            if sys_munmap(second, PAGE) != 0 {
+                uaccess_fail(b"FAIL uaccess: munmap setup\n");
+            }
+            if sys_write(1, second_ptr, 1) != EFAULT {
+                uaccess_fail(b"FAIL uaccess: unmapped source not EFAULT\n");
+            }
+            if sys_write(1, first_ptr.add(PAGE as usize - 2), 4) != EFAULT {
+                uaccess_fail(b"FAIL uaccess: unmapped cross-page tail not EFAULT\n");
+            }
+            let unmapped_ok = b"uaccess: unmapped and cross-page rejected\n";
+            sys_write(
+                1,
+                unmapped_ok.as_ptr(),
+                u32::try_from(unmapped_ok.len()).unwrap_or(0),
+            );
+
+            let ok = b"uaccess: syscall boundaries contained\n";
+            sys_write(1, ok.as_ptr(), u32::try_from(ok.len()).unwrap_or(0));
+        }
         // #489 exec harness: exec /init2. On success this process is replaced by
         // /init2 (which runs at PL0 and never returns here); on failure execve
         // returns an errno. NULL argv (argv-across-exec is a separate refinement,

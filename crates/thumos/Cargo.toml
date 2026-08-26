@@ -36,6 +36,12 @@ qemu = []
 # branch (qemu exit 4, no service-loop resume). Only meaningful with `qemu`;
 # mutually exclusive with `production` (main.rs compile_error!).
 kfault-probe = []
+# WHY (#871): QEMU-only data-abort recovery witness. Once the exception table
+# is installed it drives both uaccess assembly instructions against a PL1-only
+# page so CI proves their exact-PC fixups return an error while unrelated PL1
+# faults still halt.
+# Mutually exclusive with production (main.rs compile_error!).
+uaccess-probe = []
 # WHY (#492 fault supervision): CI crash-loop harness -- kinit spawns /crasher
 # (a program that data-aborts on every launch) and registers it SUPERVISED, so
 # CI can witness PID 0's restart policy end to end: restart x3, then give up.

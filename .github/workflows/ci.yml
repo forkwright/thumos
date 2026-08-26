@@ -318,6 +318,11 @@ jobs:
       - name: Kernel-fault halts (PL1 fault must NEVER be recovered)
         if: env.DOCS_ONLY != 'true'
         run: scripts/witness/kfault.sh
+      - name: Fault-contained syscall copyin/copyout (#871)
+        if: env.DOCS_ONLY != 'true'
+        # Real caller-VAS permission matrix plus raw post-validation
+        # LDRBT/STRBT faults; kfault immediately above is the negative control.
+        run: scripts/witness/uaccess.sh
       - name: Userspace sleep really yields (#477, no busy-wait deadlock)
         if: env.DOCS_ONLY != 'true'
         run: scripts/witness/sleep.sh

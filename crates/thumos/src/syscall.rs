@@ -34,7 +34,7 @@ use crate::ipc;
 // exercise it directly, so the import is test-only, matching `board` above.
 #[cfg(test)]
 use crate::memguard::validate_user_buffer;
-use crate::memguard::{Access, validate_user_range};
+use crate::memguard::{Access, copy_from_user, validate_user_range};
 use crate::mmu;
 use crate::page;
 use crate::pipe;
@@ -499,14 +499,19 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
             let Ok(len) = usize::try_from(arg3) else {
                 return EINVAL;
             };
-            let payload = if len > 0 && ptr != 0 {
-                let capped_len = len.min(ipc::MSG_MAX_SIZE);
-                if !validate_user_range(ptr, capped_len, Access::Read) {
+            let mut payload_storage = [0u8; ipc::MSG_MAX_SIZE];
+            let payload: &[u8] = if len > 0 {
+                if ptr == 0 {
                     return EFAULT;
                 }
-                // SAFETY: validated above against the caller's own page tables
-                // with PL0 read permission.
-                unsafe { core::slice::from_raw_parts(ptr as *const u8, capped_len) }
+                let capped_len = len.min(ipc::MSG_MAX_SIZE);
+                let Some(payload) = payload_storage.get_mut(..capped_len) else {
+                    return EINVAL;
+                };
+                if copy_from_user(ptr, payload).is_err() {
+                    return EFAULT;
+                }
+                payload
             } else {
                 &[]
             };
@@ -661,6 +666,8 @@ fn sys_read_with_pipe(fd: u32, buf_ptr: u32, count: u32) -> u32 {
 /// - VFS fd (including a `dup2`-redirected fd 1): dispatch to `fd::sys_write`.
 /// - fd 1 with no `FD_TABLE` entry: the default, un-redirected case — write to
 ///   UART serial (legacy behavior).
+const UART_COPY_CHUNK: usize = 256;
+
 fn sys_write_dispatch(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     let fd_idx = fd as usize;
     let flags = fd::current_fd_flags(fd_idx);
@@ -678,17 +685,24 @@ fn sys_write_dispatch(fd: u32, buf_ptr: u32, count: u32) -> u32 {
             let Ok(ptr) = usize::try_from(buf_ptr) else {
                 return EINVAL;
             };
-            let Ok(len) = usize::try_from(count) else {
+            let Ok(requested) = usize::try_from(count) else {
                 return EINVAL;
             };
+            // UART writes may complete partially. Bound the kernel-side copy
+            // so an untrusted count never becomes a heap reservation.
+            let len = requested.min(UART_COPY_CHUNK);
             if !validate_user_range(ptr, len, Access::Read) {
                 return EFAULT;
             }
-            // SAFETY: validated above against the caller's own page tables
-            // with PL0 read permission.
-            let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, len) };
+            let mut slice = [0u8; UART_COPY_CHUNK];
+            let Some(slice) = slice.get_mut(..len) else {
+                return EINVAL;
+            };
+            if copy_from_user(ptr, slice).is_err() {
+                return EFAULT;
+            }
             let serial = Uart::new();
-            for &byte in slice {
+            for &byte in slice.iter() {
                 serial.putc(byte);
             }
             let Ok(len_u32) = u32::try_from(len) else {
@@ -706,6 +720,14 @@ fn sys_write_dispatch(fd: u32, buf_ptr: u32, count: u32) -> u32 {
 const ENOENT: u32 = 0u32.wrapping_sub(2);
 /// Exec format error (two's complement -8, matches Linux ENOEXEC).
 const ENOEXEC: u32 = 0u32.wrapping_sub(8);
+
+/// Address the `index`th pointer-sized entry in a user argv vector without
+/// allowing either the stride or base addition to wrap.
+fn argv_entry_address(argv_base: usize, index: usize) -> Option<usize> {
+    index
+        .checked_mul(core::mem::size_of::<u32>())
+        .and_then(|offset| argv_base.checked_add(offset))
+}
 
 /// `execve(path_ptr`, `argv_ptr`, _`envp_ptr)`: replace the current process image.
 ///
@@ -746,39 +768,19 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
     // Cap at 256 bytes to bound the scan; longer paths are rejected.
     const MAX_PATH: usize = 256;
 
-    // Validate the FULL scan window [path_ptr, path_ptr+MAX_PATH) up front
-    // (#220) — validating only the first byte let the scan below walk past
-    // RAM_END for a path_ptr within MAX_PATH bytes of the top of DRAM,
-    // reading unmapped/device memory. A path within MAX_PATH bytes of
-    // RAM_END is rejected outright as a safe conservative policy.
-    if !validate_user_range(path_ptr as usize, MAX_PATH, Access::Read) {
+    let mut path_storage = [0u8; MAX_PATH];
+    if copy_from_user(path_ptr as usize, &mut path_storage).is_err() {
         return EFAULT;
     }
-
-    // Read the null-terminated path string from user space.
-    let path_len = {
-        let mut len = 0usize;
-        let ptr = path_ptr as *const u8;
-        while len < MAX_PATH {
-            // SAFETY: the current guard bounds this to configured DRAM;
-            // #871 owns caller-VAS/read-permission validation.
-            let byte = unsafe { ptr.add(len).read_volatile() };
-            if byte == 0 {
-                break;
-            }
-            len += 1;
-        }
-        if len == 0 || len == MAX_PATH {
-            return ENOENT; // empty path or unterminated within limit
-        }
-        len
+    let Some(path_len) = path_storage.iter().position(|byte| *byte == 0) else {
+        return ENOENT;
     };
-
-    // Construct path &str from the numerically bounded region.
-    // SAFETY: the current guard bounds path_len bytes to configured DRAM and
-    // the scan completed; #871 owns caller-VAS/read-permission validation.
-    // The slice lifetime is local.
-    let path_bytes = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, path_len) };
+    if path_len == 0 {
+        return ENOENT;
+    }
+    let Some(path_bytes) = path_storage.get(..path_len) else {
+        return ENOENT;
+    };
     let Ok(path) = core::str::from_utf8(path_bytes) else {
         return ENOENT;
     };
@@ -830,13 +832,30 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
         let argv_base = argv_ptr as usize;
         for i in 0..MAX_ARGS {
             // Read the i-th argv[] entry (u32 user pointer to a string).
-            let entry_addr = argv_base + i * 4;
-            if !validate_user_range(entry_addr, 4, Access::Read) {
-                break;
+            let Some(entry_addr) = argv_entry_address(argv_base, i) else {
+                // SAFETY: this is the fresh, still-unmapped stack run allocated
+                // above; exec has not modified the caller's image or fds.
+                unsafe {
+                    page::free_contiguous(new_stack_base, EXEC_STACK_PAGES);
+                }
+                return EFAULT;
+            };
+            let mut encoded_ptr = [0u8; core::mem::size_of::<u32>()];
+            if copy_from_user(entry_addr, &mut encoded_ptr).is_err() {
+                // SAFETY: this is the fresh, still-unmapped stack run allocated
+                // above; exec has not modified the caller's image or fds.
+                unsafe {
+                    page::free_contiguous(new_stack_base, EXEC_STACK_PAGES);
+                }
+                return EFAULT;
             }
-            // SAFETY: this four-byte entry was validated above against the
-            // caller's own page tables with PL0 read permission.
-            let str_ptr = unsafe { core::ptr::read_unaligned(entry_addr as *const u32) } as usize;
+            let Ok(str_ptr) = usize::try_from(u32::from_ne_bytes(encoded_ptr)) else {
+                // SAFETY: same fresh-stack rollback as the argv-entry failure.
+                unsafe {
+                    page::free_contiguous(new_stack_base, EXEC_STACK_PAGES);
+                }
+                return EFAULT;
+            };
             if str_ptr == 0 {
                 break; // null terminator of argv[]
             }
@@ -845,23 +864,25 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
             // a string starting near the end of a mapping be scanned past it.
             // Rejecting a string within MAX_ARG_LEN of the end of its mapping
             // is the same conservative policy `path_ptr` already uses above.
-            if !validate_user_range(str_ptr, MAX_ARG_LEN, Access::Read) {
-                break; // bad string pointer — stop collecting args
-            }
-            // Copy up to MAX_ARG_LEN-1 bytes of the string.
-            let mut slen = 0usize;
-            while slen < MAX_ARG_LEN - 1 {
-                // SAFETY: the whole [str_ptr, str_ptr+MAX_ARG_LEN) window was
-                // validated above against the caller's own page tables with PL0
-                // read permission, and this loop cannot leave it.
-                let byte = unsafe { (str_ptr as *const u8).add(slen).read_volatile() };
-                if byte == 0 {
-                    break;
+            let Some(arg_slot) = arg_data.get_mut(i) else {
+                break;
+            };
+            if copy_from_user(str_ptr, arg_slot).is_err() {
+                // SAFETY: same fresh-stack rollback as the argv-entry failure.
+                unsafe {
+                    page::free_contiguous(new_stack_base, EXEC_STACK_PAGES);
                 }
-                arg_data[i][slen] = byte;
-                slen += 1;
+                return EFAULT;
             }
-            arg_lens[i] = slen;
+            let slen = arg_slot
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(MAX_ARG_LEN - 1)
+                .min(MAX_ARG_LEN - 1);
+            let Some(arg_len) = arg_lens.get_mut(i) else {
+                break;
+            };
+            *arg_len = slen;
             argc += 1;
         }
     }
@@ -1886,6 +1907,21 @@ mod tests {
         assert_eq!(EFAULT, 0xFFFF_FFF2, "EFAULT must be two's complement -14");
     }
 
+    #[test]
+    fn ipc_send_rejects_nonempty_invalid_payloads() {
+        let send = Syscall::Send.as_u32();
+        assert_eq!(
+            dispatch(send, 1, 0, 0, 1),
+            EFAULT,
+            "a non-empty payload cannot use a null source"
+        );
+        assert_eq!(
+            dispatch(send, 1, 0, board::KERNEL_LOAD as u32, 1),
+            EFAULT,
+            "a non-empty payload cannot read a kernel mapping"
+        );
+    }
+
     // ---- User buffer validation ----
 
     #[test]
@@ -2354,6 +2390,21 @@ mod tests {
     }
 
     // ---- execve validation ----
+
+    #[test]
+    fn execve_argv_entry_arithmetic_rejects_stride_and_base_wrap() {
+        assert_eq!(argv_entry_address(0x4000, 3), Some(0x400c));
+        assert_eq!(
+            argv_entry_address(usize::MAX - 2, 1),
+            None,
+            "a high mapped argv base must not wrap into a low mapped page"
+        );
+        assert_eq!(
+            argv_entry_address(1, usize::MAX),
+            None,
+            "the pointer-vector stride must be overflow checked too"
+        );
+    }
 
     /// REQ-07: execve must return EFAULT for an invalid (null or kernel-space)
     /// path pointer before attempting any filesystem lookup.
