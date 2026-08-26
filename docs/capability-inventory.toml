@@ -15,7 +15,7 @@ id = "kernel-core"
 modules = ["kinit", "kinit_plan", "kardia", "exceptions", "irq", "gic", "mmu", "slab", "page", "heap", "process", "fd", "signal", "elf", "futex", "ipc", "pipe", "socket", "supervisor", "syscall", "reflex", "mmio", "memguard", "board"]
 tier = "emulated-mock-proven"
 witness = ["THUMOS-QEMU: boot-complete", "THUMOS-QEMU: service-loop ticks=", "/init spawned", "shell: hello from userspace", "USERFAULT:"]
-notes = "Selected PL0 image, fault, graceful-kill, fork/exec/brk, and guard-page behavior is witnessed in the per-probe scripts (kfault/sleep/fork/exec/forkexec/guard/brk/crashloop). This is not complete process isolation: #868 closed sys_pipe's output-range validation and no-side-effect rejection, while #871 owns centralized fault-contained copyin/copyout, permission-transition races, and the remaining userspace-pointer families."
+notes = "Selected PL0 image, fault, graceful-kill, fork/exec/brk, and guard-page behavior is witnessed in the per-probe scripts (kfault/uaccess/sleep/fork/exec/forkexec/guard/brk/crashloop). #890/#952 landed centralized direction-aware, fault-contained copyin/copyout across the syscall pointer families and #868's no-side-effect pipe boundary; the QEMU uaccess witness covers caller-VAS permissions, mapping transitions, cross-process/fork/exec isolation, and raw LDRBT/STRBT fixups. Truthful residuals: recvfrom address/payload copyout is not byte-atomic after a late payload fault, /dev/urandom may advance volatile PRNG state before a failed copyout, the four-register ABI does not surface sendto/recvfrom address arguments, and addr_len plus execve envp remain unimplemented or ignored."
 
 [[capability]]
 id = "memory-fs"
