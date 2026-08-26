@@ -391,8 +391,9 @@ fn irq_handler_body() {
         // SAFETY: observe_tick()/decide() touch only IRQ-exclusive watchdog
         // state, and watchdog::pet() writes WDT_RESTART MMIO -- all from the
         // timer IRQ at 100 Hz, non-reentrant on this single core, after
-        // watchdog::init(). QEMU's observe_tick models the autonomous hardware
-        // countdown and exits if a withheld pet reaches its deadline.
+        // watchdog::init(), which kinit completes before enabling this timer.
+        // QEMU's observe_tick models the autonomous hardware countdown and
+        // exits if a withheld pet reaches its deadline.
         unsafe {
             watchdog::observe_tick(now);
             match crate::liveness::decide(now) {

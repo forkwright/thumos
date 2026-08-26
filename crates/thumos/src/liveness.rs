@@ -70,12 +70,19 @@ pub(crate) const OWNER_COUNT: usize = 2;
 /// first and the gate would have decided nothing.
 pub(crate) const STALL_DEADLINE_TICKS: u64 = 200;
 
-/// The hardware watchdog period expressed in 100 Hz timer ticks.
+/// Canonical watchdog timeout in seconds, shared by hardware and emulation.
 ///
-/// This is also the QEMU watchdog model's countdown. One shared value keeps
-/// the policy tests and emulation witness pinned to the period programmed by
-/// `watchdog.rs` instead of letting the emulator become an easier watchdog.
-pub(crate) const WATCHDOG_TIMEOUT_TICKS: u64 = 500;
+/// `watchdog.rs` derives the MT6739 `WDT_LENGTH` units from this value, while
+/// the QEMU model derives its 100 Hz countdown below. Changing the period in
+/// either backend therefore requires changing this single declaration.
+pub(crate) const WATCHDOG_TIMEOUT_SECONDS: u64 = 5;
+
+/// Timer IRQ cadence used to express the canonical timeout as scheduler ticks.
+const TIMER_TICKS_PER_SECOND: u64 = 100;
+
+/// The canonical watchdog period expressed in timer ticks.
+pub(crate) const WATCHDOG_TIMEOUT_TICKS: u64 =
+    WATCHDOG_TIMEOUT_SECONDS * TIMER_TICKS_PER_SECOND;
 
 /// Ticks an intentional shutdown may take before the gate stops covering it.
 ///
@@ -569,12 +576,11 @@ mod tests {
         // The point of refusing early is that the log lands before the reset.
         // A deadline at or past the hardware period would never be reached --
         // the device would reset first and the gate would have decided nothing.
-        const TICK_HZ: u64 = 100;
-        const WATCHDOG_SECS: u64 = 5;
-        let hardware_period_ticks = TICK_HZ * WATCHDOG_SECS;
+        const TICK_HZ: u64 = TIMER_TICKS_PER_SECOND;
+        let hardware_period_ticks = WATCHDOG_TIMEOUT_TICKS;
         assert_eq!(
-            hardware_period_ticks, WATCHDOG_TIMEOUT_TICKS,
-            "the shared watchdog countdown must represent five seconds at 100 Hz"
+            WATCHDOG_TIMEOUT_SECONDS, 5,
+            "the canonical watchdog duration must remain the accepted five seconds"
         );
         assert!(
             STALL_DEADLINE_TICKS < hardware_period_ticks,

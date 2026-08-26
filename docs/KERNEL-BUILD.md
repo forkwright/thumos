@@ -305,10 +305,13 @@ only**. This runbook does not upgrade the hardware status:
   [`capability-inventory.toml`](capability-inventory.toml) is the canonical
   record of each capability's reachability tier and hardware gate.
 - The `qemu` feature exists precisely because the emulated board lacks the
-  hardware: it no-ops modeled watchdog/display operations and skips eMMC,
-  display (GC9306), keypad, USB, and CCCI/modem init. CPU DVFS/core-parking
-  actuation is absent from every runtime build pending #879's source-grounded
-  transaction. Those drivers have no executed on-device path.
+  hardware: it substitutes an observable software countdown for the MT6739
+  watchdog, no-ops display operations, and skips eMMC, display (GC9306),
+  keypad, USB, and CCCI/modem init. The watchdog witness proves only this
+  board-neutral integration seam, never the physical WDT MMIO/reset path. CPU
+  DVFS/core-parking actuation is absent from every runtime build pending
+  #879's source-grounded transaction. Those drivers have no executed
+  on-device path.
 - Repository tooling produces **no flashable device package** — no Android
   boot image, no scatter-file integration. There is nothing on this
   page to flash, and operators must not flash the QEMU image to a device.

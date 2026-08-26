@@ -101,14 +101,28 @@ const fn mode_disable_value(current: u32) -> u32 {
 }
 
 /// `WDT_LENGTH` key bits [4:0]: must be 0x08 to commit a length write.
-const WDT_LENGTH_KEY: u32 = 0x08;
+const WDT_LENGTH_KEY: u64 = 0x08;
 
-/// Timeout in `WDT_LENGTH` units (each unit ≈ 15.6 ms; 320 ≈ 5 seconds).
-/// Calculation: `5_000` ms / 15.625 ms = 320.
-const WDT_TIMEOUT_UNITS: u32 = 320;
+/// `WDT_LENGTH` advances at 64 units per second (32768 / 512).
+const WDT_UNITS_PER_SECOND: u64 = 64;
+
+/// Timeout units mechanically derived from the canonical watchdog duration.
+const WDT_TIMEOUT_UNITS: u64 =
+    crate::liveness::WATCHDOG_TIMEOUT_SECONDS * WDT_UNITS_PER_SECOND;
 
 /// Encoded `WDT_LENGTH` register value: timeout units in [15:5] | key in [4:0].
-const WDT_LENGTH_VAL: u32 = (WDT_TIMEOUT_UNITS << 5) | WDT_LENGTH_KEY;
+const WDT_LENGTH_VAL: u64 = (WDT_TIMEOUT_UNITS << 5) | WDT_LENGTH_KEY;
+
+// `WDT_LENGTH` has eleven timeout bits. Reject a canonical duration that the
+// physical register cannot represent instead of truncating it at the write.
+const _: () = assert!(WDT_TIMEOUT_UNITS <= 0x07ff);
+
+/// Narrow the statically range-checked timeout encoding for the 32-bit MMIO.
+fn wdt_length_value() -> u32 {
+    u32::try_from(WDT_LENGTH_VAL).unwrap_or_else(|_| {
+        unreachable!("WDT_LENGTH encoding was compile-time checked to fit in 16 bits")
+    })
+}
 
 /// Initialize the hardware watchdog with a 5-second timeout and start it.
 ///
@@ -127,7 +141,7 @@ pub unsafe fn init() {
     // timeout value.
     unsafe {
         // Step 1: program timeout before enabling
-        mmio::write32(WDT_LENGTH, WDT_LENGTH_VAL);
+        mmio::write32(WDT_LENGTH, wdt_length_value());
         // Start the new interval from a known full countdown. Mainline does
         // the same restart write after programming WDT_LENGTH.
         mmio::write32(WDT_RESTART, WDT_RESTART_KEY);
@@ -277,7 +291,7 @@ mod tests {
         assert_eq!(WDT_LENGTH_KEY, 0x08, "WDT_LENGTH write key must be 0x08");
         // Verify the full encoded value
         assert_eq!(
-            WDT_LENGTH_VAL,
+            wdt_length_value(),
             (320u32 << 5) | 0x08,
             "WDT_LENGTH_VAL must be timeout_units<<5 | 0x08"
         );

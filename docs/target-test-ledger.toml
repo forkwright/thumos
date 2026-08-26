@@ -741,9 +741,8 @@ mechanism = "host"
 [[module]]
 name = "watchdog"
 tests = 4
-mechanism = "both"
-witness = "watchdog.sh"
-fidelity = "Host tests cover MT6739 register encodings. Three QEMU paths prove the board-neutral call chain through controlled reset, frozen-owner expiry, and hung-shutdown expiry, not the physical MT6739 reset/deadline path."
+mechanism = "host"
+fidelity = "Host tests cover MT6739 register addresses, magic values, mode policy, and the WDT_LENGTH encoding mechanically derived from the shared five-second duration. QEMU path-swaps this module out, so no target witness executes the physical MMIO driver; an AGM M7 reset/deadline receipt remains unverified."
 
 [[module]]
 name = "watchdog_qemu"

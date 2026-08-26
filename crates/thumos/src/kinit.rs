@@ -5,7 +5,7 @@
 //! Hubris model: each driver init is fault-isolated, logged, and skippable.
 //!
 //! Boot ORDER:
-//! MMU → page alloc → heap → GIC → process → exceptions/timer → CSPRNG → devices →
+//! MMU → page alloc → heap → GIC → process → watchdog → exceptions/timer → CSPRNG → devices →
 //! eMMC → display → GPIO keypad → secure boot → passphrase → encrypted fs →
 //! audit log → security mode → USB serial → CCCI modem → power → userspace.
 //!
@@ -646,7 +646,29 @@ pub unsafe fn run() -> ! {
     }
 
     // -----------------------------------------------------------------------
-    // Step 5: Exception handlers + timer
+    // Step 5: Hardware watchdog (WDT)
+    // -----------------------------------------------------------------------
+    serial.log("[init] Watchdog (WDT, 5s)\r\n");
+    // SAFETY: called once after MMU init (device MMIO is identity-mapped) and
+    // before exceptions::init enables timer delivery. That ordering satisfies
+    // both the MT6739 driver and QEMU model's single-owner init contract: the
+    // timer IRQ cannot observe or pet a partially initialized backend.
+    {
+        let _irq_guard = crate::irq::IrqGuard::new();
+        unsafe {
+            watchdog::init();
+        }
+    }
+    #[cfg(not(feature = "qemu"))]
+    serial.log(" WDT armed (5s timeout)\r\n");
+    // WHY(qemu): virt has no MT6739 WDT MMIO block. watchdog_qemu.rs models
+    // the same tick countdown and emits a distinct semihosting expiry status,
+    // so this is evidence of the software seam, never a hardware claim.
+    #[cfg(feature = "qemu")]
+    serial.log(" WDT modeled (qemu: observable 5s countdown)\r\n");
+
+    // -----------------------------------------------------------------------
+    // Step 5a: Exception handlers + timer
     // -----------------------------------------------------------------------
     serial.log("[init] Exceptions + timer\r\n");
     serial.log(" CPU DVFS/core parking unavailable (no source-grounded actuator, #879)\r\n");
@@ -718,29 +740,6 @@ pub unsafe fn run() -> ! {
         serial.log(" WARN CSPRNG timed out waiting for timer credits -- bytes unavailable\r\n");
         serial.log(" Radio identity randomization disabled\r\n");
     }
-
-    // -----------------------------------------------------------------------
-    // Step 5c: Hardware watchdog (WDT)
-    // -----------------------------------------------------------------------
-    serial.log("[init] Watchdog (WDT, 5s)\r\n");
-    // SAFETY: called once after MMU init (device MMIO is identity-mapped).
-    // Configures the MT6739 WDT with a 5-second timeout. The timer handler
-    // pets it only after the progress gate accepts scheduler and PID-0 epochs.
-    // IRQ masking makes initialization atomic against that already-live timer
-    // handler, on both MMIO hardware and the QEMU software model.
-    {
-        let _irq_guard = crate::irq::IrqGuard::new();
-        unsafe {
-            watchdog::init();
-        }
-    }
-    #[cfg(not(feature = "qemu"))]
-    serial.log(" WDT armed (5s timeout)\r\n");
-    // WHY(qemu): virt has no MT6739 WDT MMIO block. watchdog_qemu.rs models
-    // the same tick countdown and emits a distinct semihosting expiry status,
-    // so this is evidence of the software seam, never a hardware claim.
-    #[cfg(feature = "qemu")]
-    serial.log(" WDT modeled (qemu: observable 5s countdown)\r\n");
 
     // -----------------------------------------------------------------------
     // Step 6: Device registry
