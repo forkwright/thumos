@@ -962,16 +962,6 @@ pub(crate) fn sys_recvfrom(
     ) {
         return fd::EFAULT;
     }
-    if src_addr_ptr != 0
-        && !crate::memguard::validate_user_range(
-            src_addr_ptr as usize,
-            SOCKADDR_IN_SIZE,
-            crate::memguard::Access::Write,
-        )
-    {
-        return fd::EFAULT;
-    }
-
     // Check fd is a socket.
     // Resolve the fd through the CURRENT process (#267): a process may only
     // name a socket it owns, and the OFD index -- not the fd number -- keys
@@ -1027,6 +1017,18 @@ pub(crate) fn sys_recvfrom(
             }
         }
         SocketType::Udp => {
+            // TCP explicitly ignores this optional UDP-only output. Validate it
+            // only after resolving the socket type, but before inspecting or
+            // consuming any datagram state.
+            if src_addr_ptr != 0
+                && !crate::memguard::validate_user_range(
+                    src_addr_ptr as usize,
+                    SOCKADDR_IN_SIZE,
+                    crate::memguard::Access::Write,
+                )
+            {
+                return fd::EFAULT;
+            }
             let udp_socket: &mut udp::Socket<'_> = stack.sockets_mut().get_mut(info.socket_handle);
 
             match udp_socket.peek() {
@@ -1769,6 +1771,27 @@ mod tests {
             result, EAGAIN,
             "recv on a UDP socket with nothing queued must return EAGAIN, not the old \
              generic 0 (indistinguishable from a legitimate zero-byte datagram)"
+        );
+    }
+
+    /// TCP's recvfrom ABI ignores the UDP-only source-address output family.
+    /// An invalid ignored pointer must not preempt the stream's own state error.
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn tcp_recvfrom_does_not_validate_ignored_source_address() {
+        static mut BUF: [u8; 1] = [0u8; 1];
+
+        unsafe {
+            setup_test_network();
+        }
+        let fd = sys_socket(AF_INET, SOCK_STREAM, 0);
+        assert!(fd < MAX_FDS as u32);
+        let buf = core::ptr::addr_of_mut!(BUF).cast::<u8>();
+
+        assert_eq!(
+            sys_recvfrom(fd, buf as u32, 1, 0, crate::board::KERNEL_LOAD as u32, 0,),
+            ENOTCONN,
+            "an ignored TCP source-address pointer must not produce EFAULT"
         );
     }
 

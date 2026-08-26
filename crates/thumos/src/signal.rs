@@ -69,6 +69,15 @@ pub(crate) const TRAMPOLINE_SVC_0: u32 = 0xEF00_0000;
 /// Trampoline length in bytes: mov + svc (#446).
 pub(crate) const TRAMPOLINE_LEN: usize = 8;
 
+/// Locate a signal frame below an interrupted user stack without allowing a
+/// low attacker-controlled SP to wrap into an unrelated high mapping.
+pub(crate) fn signal_frame_address(sp: u32) -> Result<u32, crate::memguard::UserAccessError> {
+    let frame_size =
+        u32::try_from(SIGNAL_FRAME_SIZE).map_err(|_| crate::memguard::UserAccessError)?;
+    sp.checked_sub(frame_size)
+        .ok_or(crate::memguard::UserAccessError)
+}
+
 fn encode_signal_frame(frame: &crate::process::Context) -> [u8; SIGNAL_FRAME_SIZE] {
     let mut words = [0u32; SIGNAL_FRAME_REGS];
     let (registers, control) = words.split_at_mut(frame.r.len());
@@ -146,7 +155,7 @@ pub(crate) fn deliver(
     sig: Signal,
     handler: u32,
 ) -> Result<(), crate::memguard::UserAccessError> {
-    let frame_addr = frame.sp.wrapping_sub(SIGNAL_FRAME_SIZE as u32);
+    let frame_addr = signal_frame_address(frame.sp)?;
     let encoded = encode_signal_frame(frame);
     crate::memguard::copy_to_user(frame_addr as usize, &encoded)?;
     // Dispatch: handler runs with the frame as its stack, the signum as its
@@ -739,6 +748,28 @@ mod tests {
             assert_eq!(f.add(15).read(), 0xDEAD, "interrupted pc saved");
             assert_eq!(f.add(16).read(), 0x10, "cpsr saved");
         }
+    }
+
+    #[test]
+    fn signal_delivery_rejects_stack_underflow_without_mutating_context() {
+        let mut frame = crate::process::Context {
+            r: [0xA5A5_A5A5; 13],
+            sp: 67, // one byte too small for the 68-byte frame
+            lr: 0xBEEF,
+            pc: 0xDEAD,
+            cpsr: 0x10,
+        };
+        let original = frame;
+
+        assert_eq!(
+            deliver(&mut frame, Signal::Sigusr1, 0xCAFE),
+            Err(crate::memguard::UserAccessError),
+            "a low SP must fail instead of wrapping to a high user mapping"
+        );
+        assert_eq!(
+            frame, original,
+            "failed delivery must not publish a partial handler context"
+        );
     }
 
     /// `sigreturn_frame()` must restore all 17 saved registers into the SVC

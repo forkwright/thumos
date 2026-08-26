@@ -610,7 +610,7 @@ fidelity = "Policy transitions are host/QEMU-covered, but #874 blocks automatic 
 
 [[module]]
 name = "signal"
-tests = 15
+tests = 16
 mechanism = "both"
 witness = "signal.sh"
 
@@ -634,7 +634,7 @@ witness = "boot.sh"
 
 [[module]]
 name = "socket"
-tests = 25
+tests = 26
 mechanism = "host"
 fidelity = "copyout-fault tests retain TCP/UDP queues; disjoint recvfrom outputs are prevalidated but cannot be byte-atomic across a late transfer fault"
 

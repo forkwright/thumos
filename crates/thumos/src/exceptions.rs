@@ -304,15 +304,14 @@ pub extern "C" fn irq_handler_rust(frame: *mut process::Context) {
         // SAFETY: frame is the current process's trap Context on the IRQ stack;
         // its sp/pc/lr are the interrupted user state.
         let frame_ref = unsafe { &mut *frame };
-        let signal_frame_addr = frame_ref
-            .sp
-            .wrapping_sub(crate::signal::SIGNAL_FRAME_SIZE as u32);
+        let interrupted_sp = frame_ref.sp;
         if crate::signal::deliver(frame_ref, sig, handler).is_err() {
             // A process may deliberately move SP to an unmapped/read-only
             // page before a signal arrives. Treat that exactly like its own
             // data abort; never let signal delivery turn it into a PL1 fault.
             process::fault_exit_current(process::FaultKind::DataAbort {
-                fault_addr: signal_frame_addr,
+                fault_addr: crate::signal::signal_frame_address(interrupted_sp)
+                    .unwrap_or(interrupted_sp),
                 fault_status: 0,
             });
         }

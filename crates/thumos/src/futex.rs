@@ -38,6 +38,9 @@ pub(crate) const ENOMEM: u32 = 0u32.wrapping_sub(12);
 /// EINVAL — unknown op (two's complement -22, Linux ARM convention).
 pub(crate) const EINVAL: u32 = 0u32.wrapping_sub(22);
 
+/// EFAULT — futex word is not readable in the calling address space.
+pub(crate) const EFAULT: u32 = 0u32.wrapping_sub(14);
+
 /// `FUTEX_WAIT` operation code.
 pub(crate) const FUTEX_WAIT: u32 = 0;
 
@@ -69,7 +72,7 @@ static mut FUTEX_WAITERS: [Option<FutexWaiter>; MAX_FUTEX_WAITERS] = {
 
 /// `FUTEX_WAIT`: if `*addr == val`, block the current process.
 ///
-/// Returns 0 after being woken, EAGAIN if `*addr != val`, or EINVAL if `addr`
+/// Returns 0 after being woken, EAGAIN if `*addr != val`, or EFAULT if `addr`
 /// is not a readable user mapping of the calling process (see
 /// `memguard::validate_user_range`).
 ///
@@ -84,7 +87,7 @@ pub(crate) fn sys_futex_wait(addr: u32, val: u32) -> u32 {
     // without ever dereferencing it.
     let mut encoded = [0u8; core::mem::size_of::<u32>()];
     if crate::memguard::copy_from_user(addr as usize, &mut encoded).is_err() {
-        return EINVAL;
+        return EFAULT;
     }
     let current_val = u32::from_ne_bytes(encoded);
 
@@ -326,8 +329,8 @@ mod tests {
         // path (which would return EAGAIN, not EINVAL).
         let result = sys_futex_wait(crate::board::KERNEL_LOAD as u32, 0);
         assert_eq!(
-            result, EINVAL,
-            "kernel-range addr must return EINVAL without a load"
+            result, EFAULT,
+            "kernel-range addr must return EFAULT without a load"
         );
     }
 
@@ -348,10 +351,10 @@ mod tests {
     }
 
     #[test]
-    fn futex_null_addr_returns_einval_or_eagain() {
-        // FUTEX_WAIT with null addr returns EINVAL.
+    fn futex_null_addr_returns_operation_specific_error() {
+        // FUTEX_WAIT with null addr returns EFAULT.
         let result_wait = sys_futex_wait(0, 0);
-        assert_eq!(result_wait, EINVAL);
+        assert_eq!(result_wait, EFAULT);
 
         // FUTEX_WAKE with null addr returns 0 (no waiters at null).
         let result_wake = sys_futex_wake(0, 1);
