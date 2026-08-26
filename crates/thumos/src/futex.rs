@@ -326,7 +326,7 @@ mod tests {
         reset_waiters();
         // A kernel-range addr must be rejected by validate_user_range
         // before any read_volatile — verified by never reaching the mismatch
-        // path (which would return EAGAIN, not EINVAL).
+        // path (which would return EAGAIN, not EFAULT).
         let result = sys_futex_wait(crate::board::KERNEL_LOAD as u32, 0);
         assert_eq!(
             result, EFAULT,
