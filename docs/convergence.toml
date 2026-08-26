@@ -112,19 +112,19 @@ notes = "Live 'ported from' comment: screen_dialer.rs:11. eidolon -> haphe is th
 name = "leipsanon"
 kernel = "panic_wipe.rs (priority ordering mirrors leipsanon's scheme, :55; target-layout paths match leipsanon, :91)"
 workspace = "leipsanon"
-disposition = "pending"
-canonical = "pending #545 sign-off on end-state design"
-owner = "#545 (design pending operator sign-off)"
-notes = "Discovered widening the port-marker detector past literal 'ported from' phrasing (#820) -- previously invisible to the ratchet entirely, despite naming live duplication. panic_wipe.rs's priority-ordering logic is live today; only the underlying filesystem write is a stub, so this is not yet a full duplicate ready to converge, extract, or assign ownership of. Recorded as pending rather than forced into a disposition ahead of that decision."
+disposition = "extract-core"
+canonical = "planned leipsanon-core for the shared priority-ordering and target-layout policy; not yet extracted"
+owner = "#545 (approved plan; implementation unscheduled)"
+notes = "Discovered widening the port-marker detector past literal 'ported from' phrasing (#820) -- previously invisible to the ratchet entirely, despite naming live duplication. The operator-approved #545 end-state assigns this pair to extract-core. panic_wipe.rs's priority-ordering logic is live today; the underlying filesystem write remains a stub. No extraction or convergence has happened yet, and implementation remains unscheduled."
 
 [[pair]]
 name = "stegnos"
 kernel = "security.rs (passphrase-derived-key parameter matches stegnos, :24), encryption.rs (Xts128<Aes256>)"
 workspace = "stegnos (cipher.rs, Xts128<Aes256>)"
-disposition = "pending"
-canonical = "pending #545 sign-off on end-state design"
-owner = "#545 (design pending operator sign-off)"
-notes = "Discovered widening the port-marker detector past literal 'ported from' phrasing (#820) -- previously invisible to the ratchet entirely, despite naming live duplication. encryption.rs and stegnos/src/cipher.rs both build Xts128<Aes256>; security.rs's PBKDF2_ITERATIONS doc comment records the passphrase-derived-key parameter as matching stegnos. Recorded as pending rather than forced into a disposition ahead of #545's end-state design."
+disposition = "extract-core"
+canonical = "planned stegnos-core for the shared AES-XTS and passphrase-derived-key policy; not yet extracted"
+owner = "#545 (approved plan; implementation unscheduled)"
+notes = "Discovered widening the port-marker detector past literal 'ported from' phrasing (#820) -- previously invisible to the ratchet entirely, despite naming live duplication. The operator-approved #545 end-state assigns this pair to extract-core. encryption.rs and stegnos/src/cipher.rs both build Xts128<Aes256>; security.rs's PBKDF2_ITERATIONS doc comment records the passphrase-derived-key parameter as matching stegnos. No extraction or convergence has happened yet, and implementation remains unscheduled."
 
 [[pair]]
 name = "skipped-key-cache"
