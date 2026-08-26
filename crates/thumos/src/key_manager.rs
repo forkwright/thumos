@@ -616,12 +616,20 @@ mod tests {
         // point -- 100k PBKDF2 iterations with the injected device salt --
         // not just the low-iteration derive_test_primary helper every other
         // test in this module uses for speed.
-        let key1 = KeyManager::derive_from_passphrase(b"production entry point test", TEST_SALT, crate::secrets::V1_KDF)
-            .expect("derive_from_passphrase must succeed");
+        let key1 = KeyManager::derive_from_passphrase(
+            b"production entry point test",
+            TEST_SALT,
+            crate::secrets::V1_KDF,
+        )
+        .expect("derive_from_passphrase must succeed");
         assert!(!key1.is_zero(), "derived primary key must not be all zeros");
 
-        let key2 = KeyManager::derive_from_passphrase(b"production entry point test", TEST_SALT, crate::secrets::V1_KDF)
-            .expect("derive_from_passphrase must succeed");
+        let key2 = KeyManager::derive_from_passphrase(
+            b"production entry point test",
+            TEST_SALT,
+            crate::secrets::V1_KDF,
+        )
+        .expect("derive_from_passphrase must succeed");
         assert_eq!(
             key1.as_bytes(),
             key2.as_bytes(),
@@ -636,10 +644,18 @@ mod tests {
         // brute-force/rainbow resistance is per-device, not per-image.
         let salt_a: &[u8] = b"device-a-persisted-salt";
         let salt_b: &[u8] = b"device-b-persisted-salt";
-        let key_a = KeyManager::derive_from_passphrase(b"the same user passphrase", salt_a, crate::secrets::V1_KDF)
-            .expect("derive with salt A");
-        let key_b = KeyManager::derive_from_passphrase(b"the same user passphrase", salt_b, crate::secrets::V1_KDF)
-            .expect("derive with salt B");
+        let key_a = KeyManager::derive_from_passphrase(
+            b"the same user passphrase",
+            salt_a,
+            crate::secrets::V1_KDF,
+        )
+        .expect("derive with salt A");
+        let key_b = KeyManager::derive_from_passphrase(
+            b"the same user passphrase",
+            salt_b,
+            crate::secrets::V1_KDF,
+        )
+        .expect("derive with salt B");
         assert_ne!(
             key_a.as_bytes(),
             key_b.as_bytes(),

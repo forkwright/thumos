@@ -766,7 +766,8 @@ mod tests {
         let mut dev = MemBlockDevice::new(1).expect("device");
         let first = load_or_provision(&mut dev, stream(0xA0)).expect("provision");
         let verifier = sample_verifier();
-        let stored = store_boot_verifier(&mut dev, &first.salt, &verifier, MASTER_KDF).expect("store verifier");
+        let stored = store_boot_verifier(&mut dev, &first.salt, &verifier, MASTER_KDF)
+            .expect("store verifier");
         assert_eq!(stored.boot_verifier, Some(verifier));
         assert_eq!(stored.salt, first.salt, "store preserves the salt");
 

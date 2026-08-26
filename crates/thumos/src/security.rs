@@ -642,9 +642,7 @@ fn derive_under_using(
             m_cost_kib,
             t_cost,
             p_cost,
-        } => argon2id_digest(
-            secret, salt, m_cost_kib, t_cost, p_cost, alloc_fn, free_fn,
-        ),
+        } => argon2id_digest(secret, salt, m_cost_kib, t_cost, p_cost, alloc_fn, free_fn),
     }
 }
 
