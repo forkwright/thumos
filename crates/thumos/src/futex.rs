@@ -16,6 +16,8 @@
 //! - No atomics beyond pointer reads: single-core cooperative kernel means
 //!   there is no preemption between the addr check and the state transition,
 //!   so the check-then-block is not a race.
+//! - Wait queues are private to one address space. Two processes can map the
+//!   same virtual address without gaining the ability to wake each other.
 //! - Process suspension: set state to Blocked; the scheduler will not
 //!   reschedule a Blocked process. Wakeup sets it back to Ready.
 //!
@@ -36,6 +38,9 @@ pub(crate) const ENOMEM: u32 = 0u32.wrapping_sub(12);
 /// EINVAL — unknown op (two's complement -22, Linux ARM convention).
 pub(crate) const EINVAL: u32 = 0u32.wrapping_sub(22);
 
+/// EFAULT — futex word is not readable in the calling address space.
+pub(crate) const EFAULT: u32 = 0u32.wrapping_sub(14);
+
 /// `FUTEX_WAIT` operation code.
 pub(crate) const FUTEX_WAIT: u32 = 0;
 
@@ -49,6 +54,12 @@ const MAX_FUTEX_WAITERS: usize = 32;
 pub(crate) struct FutexWaiter {
     /// The address being waited on.
     pub addr: u32,
+    /// Physical L1 table that owns `addr`.
+    ///
+    /// WHY not only the virtual address: identical user VAs in independent
+    /// processes are unrelated futexes. The page-table identity also leaves a
+    /// clean path for future threads that share one address space.
+    pub address_space: usize,
     /// PID of the waiting process.
     pub pid: u32,
 }
@@ -61,7 +72,7 @@ static mut FUTEX_WAITERS: [Option<FutexWaiter>; MAX_FUTEX_WAITERS] = {
 
 /// `FUTEX_WAIT`: if `*addr == val`, block the current process.
 ///
-/// Returns 0 after being woken, EAGAIN if `*addr != val`, or EINVAL if `addr`
+/// Returns 0 after being woken, EAGAIN if `*addr != val`, or EFAULT if `addr`
 /// is not a readable user mapping of the calling process (see
 /// `memguard::validate_user_range`).
 ///
@@ -74,14 +85,11 @@ pub(crate) fn sys_futex_wait(addr: u32, val: u32) -> u32 {
     // is acceptable here. The check also covers the waiter registration below,
     // which stores this same `addr` for later comparison in `sys_futex_wake`
     // without ever dereferencing it.
-    if !crate::memguard::validate_user_range(addr as usize, 4, crate::memguard::Access::Read) {
-        return EINVAL;
+    let mut encoded = [0u8; core::mem::size_of::<u32>()];
+    if crate::memguard::copy_from_user(addr as usize, &mut encoded).is_err() {
+        return EFAULT;
     }
-
-    // Read the current value atomically (single-core: no racing stores).
-    // SAFETY: [addr, addr+4) was validated above against the caller's own page
-    // tables with PL0 read permission, so it is mapped and readable.
-    let current_val = unsafe { core::ptr::read_volatile(addr as *const u32) };
+    let current_val = u32::from_ne_bytes(encoded);
 
     if current_val != val {
         // Value already changed — tell the caller to retry.
@@ -108,6 +116,7 @@ pub(crate) fn sys_futex_wait(addr: u32, val: u32) -> u32 {
     {
         // Register this process as a waiter.
         let pid = crate::process::current_pid() as u32;
+        let address_space = crate::process::current_page_table();
 
         // SAFETY: FUTEX_WAITERS is a static mut; addr_of_mut! avoids an intermediate
         // reference. Single-core cooperative kernel ensures exclusive access here.
@@ -120,7 +129,11 @@ pub(crate) fn sys_futex_wait(addr: u32, val: u32) -> u32 {
             // between that check and this one.
             return ENOMEM;
         };
-        *slot = Some(FutexWaiter { addr, pid });
+        *slot = Some(FutexWaiter {
+            addr,
+            address_space,
+            pid,
+        });
 
         // Block the current process. The scheduler will not pick it until WAKE.
         // SAFETY: setting our own process state to Blocked is safe on a cooperative
@@ -158,6 +171,19 @@ pub fn sys_futex_wake(addr: u32, max_wake: u32) -> u32 {
         return 0;
     }
 
+    // FUTEX_WAKE does not dereference `addr`; it names a private wait queue.
+    // Keying that queue by the caller's VAS prevents an arbitrary numeric VA
+    // from reaching a different process's waiter table entry.
+    #[cfg(not(test))]
+    let address_space = crate::process::current_page_table();
+    #[cfg(test)]
+    let address_space = 0;
+
+    wake_waiters_for_address_space(addr, max_wake, address_space)
+}
+
+/// Wake private futex waiters in exactly one address space.
+fn wake_waiters_for_address_space(addr: u32, max_wake: u32, address_space: usize) -> u32 {
     // SAFETY: FUTEX_WAITERS is a static mut; addr_of_mut! avoids an
     // intermediate reference. Single-core cooperative kernel ensures exclusive
     // access here.
@@ -170,6 +196,7 @@ pub fn sys_futex_wake(addr: u32, max_wake: u32) -> u32 {
         }
         if let Some(ref w) = *slot
             && w.addr == addr
+            && w.address_space == address_space
         {
             let pid = w.pid as u8;
             *slot = None;
@@ -220,7 +247,11 @@ pub(crate) fn insert_waiter_for_test(addr: u32, pid: u32) {
     // static starts zeroed and is not shared across tests.
     let waiters = unsafe { &mut *core::ptr::addr_of_mut!(FUTEX_WAITERS) };
     if let Some(slot) = waiters.iter_mut().find(|s| s.is_none()) {
-        *slot = Some(FutexWaiter { addr, pid });
+        *slot = Some(FutexWaiter {
+            addr,
+            address_space: 0,
+            pid,
+        });
     }
 }
 
@@ -295,11 +326,11 @@ mod tests {
         reset_waiters();
         // A kernel-range addr must be rejected by validate_user_range
         // before any read_volatile — verified by never reaching the mismatch
-        // path (which would return EAGAIN, not EINVAL).
+        // path (which would return EAGAIN, not EFAULT).
         let result = sys_futex_wait(crate::board::KERNEL_LOAD as u32, 0);
         assert_eq!(
-            result, EINVAL,
-            "kernel-range addr must return EINVAL without a load"
+            result, EFAULT,
+            "kernel-range addr must return EFAULT without a load"
         );
     }
 
@@ -320,10 +351,10 @@ mod tests {
     }
 
     #[test]
-    fn futex_null_addr_returns_einval_or_eagain() {
-        // FUTEX_WAIT with null addr returns EINVAL.
+    fn futex_null_addr_returns_operation_specific_error() {
+        // FUTEX_WAIT with null addr returns EFAULT.
         let result_wait = sys_futex_wait(0, 0);
-        assert_eq!(result_wait, EINVAL);
+        assert_eq!(result_wait, EFAULT);
 
         // FUTEX_WAKE with null addr returns 0 (no waiters at null).
         let result_wake = sys_futex_wake(0, 1);
@@ -340,10 +371,12 @@ mod tests {
             let waiters = &mut *core::ptr::addr_of_mut!(FUTEX_WAITERS);
             waiters[0] = Some(FutexWaiter {
                 addr: 0x1000,
+                address_space: 0x100_0000,
                 pid: 4,
             });
             waiters[1] = Some(FutexWaiter {
                 addr: 0x2000,
+                address_space: 0x200_0000,
                 pid: 7,
             });
         }
@@ -388,5 +421,41 @@ mod tests {
             result, ENOMEM,
             "a full waiter table must return ENOMEM, distinct from EAGAIN's value-mismatch signal"
         );
+    }
+
+    #[test]
+    fn futex_wake_is_scoped_to_callers_address_space() {
+        reset_waiters();
+        let addr = 0x2000_1000;
+        let first_space = 0x0100_0000;
+        let second_space = 0x0200_0000;
+
+        // SAFETY: test-only direct setup; reset_waiters established exclusive
+        // ownership of the table in this nextest process.
+        unsafe {
+            let waiters = &mut *core::ptr::addr_of_mut!(FUTEX_WAITERS);
+            waiters[0] = Some(FutexWaiter {
+                addr,
+                address_space: first_space,
+                pid: 4,
+            });
+            waiters[1] = Some(FutexWaiter {
+                addr,
+                address_space: second_space,
+                pid: 7,
+            });
+        }
+
+        assert_eq!(wake_waiters_for_address_space(addr, 8, first_space), 1);
+
+        // SAFETY: read-only inspection of the same test-owned table.
+        unsafe {
+            let waiters = &*core::ptr::addr_of!(FUTEX_WAITERS);
+            assert!(waiters[0].is_none(), "matching VAS waiter must wake");
+            assert!(
+                waiters[1].is_some(),
+                "same VA in an unrelated VAS must remain blocked"
+            );
+        }
     }
 }

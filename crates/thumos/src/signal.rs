@@ -69,6 +69,69 @@ pub(crate) const TRAMPOLINE_SVC_0: u32 = 0xEF00_0000;
 /// Trampoline length in bytes: mov + svc (#446).
 pub(crate) const TRAMPOLINE_LEN: usize = 8;
 
+/// Locate a signal frame below an interrupted user stack without allowing a
+/// low attacker-controlled SP to wrap into an unrelated high mapping.
+pub(crate) fn signal_frame_address(sp: u32) -> Result<u32, crate::memguard::UserAccessError> {
+    let frame_size =
+        u32::try_from(SIGNAL_FRAME_SIZE).map_err(|_| crate::memguard::UserAccessError)?;
+    sp.checked_sub(frame_size)
+        .ok_or(crate::memguard::UserAccessError)
+}
+
+fn encode_signal_frame(frame: &crate::process::Context) -> [u8; SIGNAL_FRAME_SIZE] {
+    let mut words = [0u32; SIGNAL_FRAME_REGS];
+    let (registers, control) = words.split_at_mut(frame.r.len());
+    registers.copy_from_slice(&frame.r);
+    let [sp, lr, pc, cpsr] = control else {
+        return [0u8; SIGNAL_FRAME_SIZE];
+    };
+    *sp = frame.sp;
+    *lr = frame.lr;
+    *pc = frame.pc;
+    *cpsr = frame.cpsr;
+
+    let mut encoded = [0u8; SIGNAL_FRAME_SIZE];
+    for (destination, word) in encoded
+        .chunks_exact_mut(core::mem::size_of::<u32>())
+        .zip(words)
+    {
+        destination.copy_from_slice(&word.to_ne_bytes());
+    }
+    encoded
+}
+
+fn decode_signal_frame(
+    encoded: &[u8; SIGNAL_FRAME_SIZE],
+) -> Result<crate::process::Context, crate::memguard::UserAccessError> {
+    let mut words = [0u32; SIGNAL_FRAME_REGS];
+    for (word, source) in words
+        .iter_mut()
+        .zip(encoded.chunks_exact(core::mem::size_of::<u32>()))
+    {
+        let [b0, b1, b2, b3] = source else {
+            return Err(crate::memguard::UserAccessError);
+        };
+        *word = u32::from_ne_bytes([*b0, *b1, *b2, *b3]);
+    }
+    let (registers, control) = words.split_at(13);
+    let [sp, lr, pc, cpsr] = control else {
+        return Err(crate::memguard::UserAccessError);
+    };
+    let mut restored = crate::process::Context {
+        r: [0; 13],
+        sp: 0,
+        lr: 0,
+        pc: 0,
+        cpsr: 0,
+    };
+    restored.r.copy_from_slice(registers);
+    restored.sp = *sp;
+    restored.lr = *lr;
+    restored.pc = *pc;
+    restored.cpsr = crate::process::sanitize_user_cpsr(*cpsr);
+    Ok(restored)
+}
+
 /// Deliver a handled signal to the interrupted user context (#446).
 ///
 /// Builds a signal frame on the user stack (the 17 saved `Context` words)
@@ -87,30 +150,24 @@ pub(crate) const TRAMPOLINE_LEN: usize = 8;
 /// `frame` must be the live trap frame of the process the signal targets
 /// (its sp/pc/lr are the interrupted user state), and the process must own a
 /// mapped trampoline page (`map_signal_trampoline` ran at spawn).
-pub(crate) unsafe fn deliver(frame: &mut crate::process::Context, sig: Signal, handler: u32) {
-    let frame_addr = frame.sp.wrapping_sub(SIGNAL_FRAME_SIZE as u32) as *mut u32;
-    // SAFETY: the user stack range below the interrupted sp is mapped user-RW
-    // for this process (map_user_stack grants the run; sp always has
-    // SIGNAL_FRAME_SIZE of headroom in the reserved top page).
-    unsafe {
-        let dst = frame_addr;
-        for (i, word) in frame.r.iter().enumerate() {
-            dst.add(i).write_volatile(*word);
-        }
-        dst.add(13).write_volatile(frame.sp);
-        dst.add(14).write_volatile(frame.lr);
-        dst.add(15).write_volatile(frame.pc);
-        dst.add(16).write_volatile(frame.cpsr);
-    }
+pub(crate) fn deliver(
+    frame: &mut crate::process::Context,
+    sig: Signal,
+    handler: u32,
+) -> Result<(), crate::memguard::UserAccessError> {
+    let frame_addr = signal_frame_address(frame.sp)?;
+    let encoded = encode_signal_frame(frame);
+    crate::memguard::copy_to_user(frame_addr as usize, &encoded)?;
     // Dispatch: handler runs with the frame as its stack, the signum as its
     // first argument (r0), and lr at the RX trampoline page. The pending bit
     // for THIS signal is cleared now so the handler runs exactly once per
     // raise.
-    frame.sp = frame_addr as u32;
+    frame.sp = frame_addr;
     frame.pc = handler;
     frame.lr = SIGNAL_TRAMPOLINE_VA as u32;
     frame.r[0] = sig as u32;
     crate::process::clear_pending_for_current(sig);
+    Ok(())
 }
 
 /// The sigreturn trampoline as machine words: `mov r7, #81; svc #0` (#446).
@@ -166,26 +223,14 @@ pub(crate) unsafe fn write_trampoline_page(_phys: usize) {}
 /// of it before invoking sigreturn. Being PL0-*mapped* establishes that the
 /// read is sound, not that the values mean anything. Register values are the
 /// process's own business, but the saved CPSR is not -- see below (#838).
-pub(crate) unsafe fn sigreturn_frame(frame: &mut crate::process::Context) {
-    let src = frame.sp as *const u32;
-    // SAFETY: the trampoline's user sp is the signal frame deliver() built;
-    // it is PL0-mapped and valid for the full 17-word saved Context.
-    unsafe {
-        for (i, word) in frame.r.iter_mut().enumerate() {
-            *word = src.add(i).read_volatile();
-        }
-        frame.sp = src.add(13).read_volatile();
-        frame.lr = src.add(14).read_volatile();
-        frame.pc = src.add(15).read_volatile();
-        // WHY sanitized, not restored (#838): the SVC epilogue loads this word
-        // straight into SPSR with `msr spsr_cxsf` and returns via `movs pc, lr`,
-        // which commits SPSR into CPSR -- mode bits included. Adopting the saved
-        // word as given would let a process write M[4:0] = 0x13 into its own
-        // stack, call sigreturn, and resume at a PC of its choosing in PL1,
-        // past every isolation property this kernel has. Only the bits a
-        // process may legitimately choose survive; the mode is forced to User.
-        frame.cpsr = crate::process::sanitize_user_cpsr(src.add(16).read_volatile());
-    }
+pub(crate) fn sigreturn_frame(
+    frame: &mut crate::process::Context,
+) -> Result<(), crate::memguard::UserAccessError> {
+    let mut encoded = [0u8; SIGNAL_FRAME_SIZE];
+    crate::memguard::copy_from_user(frame.sp as usize, &mut encoded)?;
+    let restored = decode_signal_frame(&encoded)?;
+    *frame = restored;
+    Ok(())
 }
 
 /// Unreachable by design: `svc_handler_rust` special-cases syscall 81 before
@@ -680,8 +725,10 @@ mod tests {
         let stack_top = base as u32 + (64 * 4);
         frame.sp = stack_top;
 
-        // SAFETY: frame is a test Context whose sp points at the test buffer.
-        unsafe { deliver(&mut frame, Signal::Sigusr1, 0xCAFE) };
+        assert!(
+            deliver(&mut frame, Signal::Sigusr1, 0xCAFE).is_ok(),
+            "mapped test stack must accept a signal frame"
+        );
 
         let frame_addr = stack_top - (SIGNAL_FRAME_SIZE as u32);
         assert_eq!(frame.sp, frame_addr, "sp must land at the frame base");
@@ -701,6 +748,28 @@ mod tests {
             assert_eq!(f.add(15).read(), 0xDEAD, "interrupted pc saved");
             assert_eq!(f.add(16).read(), 0x10, "cpsr saved");
         }
+    }
+
+    #[test]
+    fn signal_delivery_rejects_stack_underflow_without_mutating_context() {
+        let mut frame = crate::process::Context {
+            r: [0xA5A5_A5A5; 13],
+            sp: 67, // one byte too small for the 68-byte frame
+            lr: 0xBEEF,
+            pc: 0xDEAD,
+            cpsr: 0x10,
+        };
+        let original = frame;
+
+        assert_eq!(
+            deliver(&mut frame, Signal::Sigusr1, 0xCAFE),
+            Err(crate::memguard::UserAccessError),
+            "a low SP must fail instead of wrapping to a high user mapping"
+        );
+        assert_eq!(
+            frame, original,
+            "failed delivery must not publish a partial handler context"
+        );
     }
 
     /// `sigreturn_frame()` must restore all 17 saved registers into the SVC
@@ -745,8 +814,11 @@ mod tests {
             cpsr: 0,
         };
         trap.sp = base as u32;
-        // SAFETY: trap.sp points at the frame built above.
-        unsafe { sigreturn_frame(&mut trap) };
+        crate::process::map_user_buffer_for_test(base as usize, SIGNAL_FRAME_SIZE);
+        assert!(
+            sigreturn_frame(&mut trap).is_ok(),
+            "mapped test frame must restore"
+        );
         assert_eq!(trap.r[0], 0x1111);
         assert_eq!(trap.r[9], 0x9999);
         assert_eq!(trap.sp, 0x7777, "sp restored to the interrupted value");
@@ -760,8 +832,8 @@ mod tests {
 
     /// Lay out a signal frame whose saved CPSR is `cpsr`, run sigreturn
     /// against it, and hand back the CPSR the process would resume with.
-    fn sigreturn_with_saved_cpsr(frame: &mut [u32; 21], cpsr: u32) -> u32 {
-        let base: *mut u32 = frame.as_mut_ptr();
+    fn sigreturn_with_saved_cpsr(frame: *mut [u32; 21], cpsr: u32) -> u32 {
+        let base = frame.cast::<u32>();
         // SAFETY: `frame` is a live 21-word buffer owned by the caller; the
         // 17 words written here are the layout deliver() builds.
         unsafe {
@@ -780,8 +852,11 @@ mod tests {
             pc: 0,
             cpsr: 0,
         };
-        // SAFETY: trap.sp points at the frame built above.
-        unsafe { sigreturn_frame(&mut trap) };
+        crate::process::map_user_buffer_for_test(base as usize, SIGNAL_FRAME_SIZE);
+        assert!(
+            sigreturn_frame(&mut trap).is_ok(),
+            "mapped test frame must restore"
+        );
         trap.cpsr
     }
 
@@ -790,11 +865,15 @@ mod tests {
     /// mode must come back as User; anything else is a PL0 -> PL1 escalation.
     #[test]
     fn sigreturn_forces_user_mode_whatever_the_frame_claims() {
+        static mut FRAME: [u32; 21] = [0; 21];
+
         // ARM ARM B1.3.1: FIQ, IRQ, Supervisor, Monitor, Abort, Hyp,
         // Undefined, System. Every one of these is PL1 or above.
         for forged in [0x11, 0x12, 0x13, 0x16, 0x17, 0x1A, 0x1B, 0x1F] {
-            let mut frame = [0u32; 21];
-            let resumed = sigreturn_with_saved_cpsr(&mut frame, forged);
+            // i686 test-thread stacks and its allocator can lie outside the
+            // board's modelled identity DRAM window. A test-local static
+            // matches the buffers used by the syscall host suites.
+            let resumed = sigreturn_with_saved_cpsr(core::ptr::addr_of_mut!(FRAME), forged);
             assert_eq!(
                 resumed & 0x1F,
                 0x10,
@@ -808,9 +887,11 @@ mod tests {
     /// disabled and never yield.
     #[test]
     fn sigreturn_clears_interrupt_masks_the_frame_tries_to_set() {
-        let mut frame = [0u32; 21];
+        static mut FRAME: [u32; 21] = [0; 21];
+
         // I (0x80) | F (0x40) | A (0x100), on top of a legitimate User mode.
-        let resumed = sigreturn_with_saved_cpsr(&mut frame, 0x10 | 0x80 | 0x40 | 0x100);
+        let resumed =
+            sigreturn_with_saved_cpsr(core::ptr::addr_of_mut!(FRAME), 0x10 | 0x80 | 0x40 | 0x100);
         assert_eq!(resumed & (0x80 | 0x40 | 0x100), 0, "I/F/A must be cleared");
         assert_eq!(resumed & 0x1F, 0x10, "still User mode");
     }
@@ -819,11 +900,12 @@ mod tests {
     /// GE field, IT state, endianness and Thumb bit are the process's own.
     #[test]
     fn sigreturn_preserves_the_bits_a_process_may_choose() {
-        let mut frame = [0u32; 21];
+        static mut FRAME: [u32; 21] = [0; 21];
+
         // N|Z|C|V|Q, GE[3:0], both IT halves, E, T -- with a forged Supervisor
         // mode underneath, to prove preservation and forcing are independent.
         let claimed = 0xF800_0000 | 0x0600_0000 | 0x000F_0000 | 0x0000_FC00 | 0x0000_0200 | 0x20;
-        let resumed = sigreturn_with_saved_cpsr(&mut frame, claimed | 0x13);
+        let resumed = sigreturn_with_saved_cpsr(core::ptr::addr_of_mut!(FRAME), claimed | 0x13);
         assert_eq!(
             resumed,
             claimed | 0x10,
@@ -835,8 +917,9 @@ mod tests {
     /// return it to ARM decoding at a Thumb PC.
     #[test]
     fn sigreturn_keeps_the_thumb_bit() {
-        let mut frame = [0u32; 21];
-        let resumed = sigreturn_with_saved_cpsr(&mut frame, 0x10 | 0x20);
+        static mut FRAME: [u32; 21] = [0; 21];
+
+        let resumed = sigreturn_with_saved_cpsr(core::ptr::addr_of_mut!(FRAME), 0x10 | 0x20);
         assert_eq!(resumed & 0x20, 0x20, "Thumb bit survives");
     }
 }

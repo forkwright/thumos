@@ -24,7 +24,7 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 
-use crate::memguard::{Access, validate_user_range};
+use crate::memguard::{Access, copy_from_user, copy_to_user, validate_user_range};
 use crate::vfs::{self, Filesystem, InodeType, MountTable, VfsError};
 
 /// Maximum number of open file descriptors per process.
@@ -123,6 +123,30 @@ pub struct StatBuf {
     pub size: u32,
     /// File type (`S_IFREG`, `S_IFDIR`, `S_IFCHR`).
     pub file_type: u32,
+}
+
+/// Maximum bytes one regular-file read/write attempts per syscall.
+///
+/// POSIX permits a successful short transfer. Capping the bounce buffer keeps
+/// an attacker-controlled `count` from reserving the kernel's bounded heap or
+/// exhausting the 16 KiB SVC stack; callers advance through larger buffers by
+/// issuing another syscall.
+const USER_IO_CHUNK: usize = 1024;
+
+fn copy_user_path(path_ptr: u32, len: usize, storage: &mut [u8; MAX_PATH]) -> Result<&str, u32> {
+    let Some(path_bytes) = storage.get_mut(..len) else {
+        return Err(EINVAL);
+    };
+    copy_from_user(path_ptr as usize, path_bytes).map_err(|_| EFAULT)?;
+    core::str::from_utf8(path_bytes).map_err(|_| EINVAL)
+}
+
+fn copy_stat_to_user(stat_buf_ptr: u32, stat: StatBuf) -> Result<(), u32> {
+    let mut encoded = [0u8; core::mem::size_of::<StatBuf>()];
+    let (size_out, file_type_out) = encoded.split_at_mut(core::mem::size_of::<u32>());
+    size_out.copy_from_slice(&stat.size.to_ne_bytes());
+    file_type_out.copy_from_slice(&stat.file_type.to_ne_bytes());
+    copy_to_user(stat_buf_ptr as usize, &encoded).map_err(|_| EFAULT)
 }
 
 /// An open-file description payload: file identity, offset, and status flags.
@@ -715,16 +739,10 @@ pub(crate) fn sys_open(path_ptr: u32, path_len: u32, flags: u32) -> u32 {
         return ENOENT;
     }
 
-    // Read: the path bytes are copied OUT of user memory.
-    if !validate_user_range(path_ptr as usize, len, Access::Read) {
-        return EFAULT;
-    }
-
-    // SAFETY: the current guard bounds this to configured DRAM only; #871
-    // owns caller-VAS mapping and permission validation.
-    let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
-    let Ok(path) = core::str::from_utf8(path_slice) else {
-        return EINVAL;
+    let mut path_storage = [0u8; MAX_PATH];
+    let path = match copy_user_path(path_ptr, len, &mut path_storage) {
+        Ok(path) => path,
+        Err(error) => return error,
     };
 
     // SAFETY: init_vfs has been called during kernel init.
@@ -777,7 +795,7 @@ pub(crate) fn sys_open(path_ptr: u32, path_len: u32, flags: u32) -> u32 {
 /// Number of bytes read (0 at EOF), or negative error code.
 pub(crate) fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     let fd_idx = fd as usize;
-    let count = count as usize;
+    let transfer_len = (count as usize).min(USER_IO_CHUNK);
 
     if buf_ptr == 0 {
         return EFAULT;
@@ -785,7 +803,7 @@ pub(crate) fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     // Write: file data is copied INTO this buffer. Validated ahead of the
     // fd/mount-table lookups below (an early-reject, rather than right at the
     // deref) so a bad buf_ptr is rejected regardless of fd/mount state.
-    if !validate_user_range(buf_ptr as usize, count, Access::Write) {
+    if !validate_user_range(buf_ptr as usize, transfer_len, Access::Write) {
         return EFAULT;
     }
 
@@ -817,12 +835,19 @@ pub(crate) fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
         return EBADF;
     };
 
-    // SAFETY: the current guard bounds buf_ptr + count to configured DRAM;
-    // #871 owns caller-VAS mapping and write-permission validation.
-    let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count) };
+    let mut dst = [0u8; USER_IO_CHUNK];
+    let Some(dst) = dst.get_mut(..transfer_len) else {
+        return EIO;
+    };
 
     match fs.read_mut(inode_id, offset, dst) {
         Ok(n) => {
+            let Some(bytes_read) = dst.get(..n) else {
+                return EIO;
+            };
+            if copy_to_user(buf_ptr as usize, bytes_read).is_err() {
+                return EFAULT;
+            }
             // Update the SHARED offset on the OFD so dup'd and forked
             // descriptors advance together. Guard defensively instead of
             // panicking (expect_used is denied in kernel code).
@@ -847,7 +872,7 @@ pub(crate) fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
 /// Number of bytes written, or negative error code.
 pub(crate) fn sys_write(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     let fd_idx = fd as usize;
-    let count = count as usize;
+    let transfer_len = (count as usize).min(USER_IO_CHUNK);
 
     if buf_ptr == 0 {
         return EFAULT;
@@ -856,7 +881,7 @@ pub(crate) fn sys_write(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     // is acceptable. Validated ahead of the fd/mount-table lookups below (an
     // early-reject, rather than right at the deref) so a bad buf_ptr is
     // rejected regardless of fd/mount state.
-    if !validate_user_range(buf_ptr as usize, count, Access::Read) {
+    if !validate_user_range(buf_ptr as usize, transfer_len, Access::Read) {
         return EFAULT;
     }
 
@@ -886,9 +911,13 @@ pub(crate) fn sys_write(fd: u32, buf_ptr: u32, count: u32) -> u32 {
         return EBADF;
     };
 
-    // SAFETY: the current guard bounds buf_ptr + count to configured DRAM;
-    // #871 owns caller-VAS mapping and read-permission validation.
-    let src = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, count) };
+    let mut src = [0u8; USER_IO_CHUNK];
+    let Some(src) = src.get_mut(..transfer_len) else {
+        return EIO;
+    };
+    if copy_from_user(buf_ptr as usize, src).is_err() {
+        return EFAULT;
+    }
 
     match fs.write(inode_id, offset, src) {
         Ok(n) => {
@@ -946,23 +975,20 @@ pub(crate) fn sys_stat(path_ptr: u32, path_len: u32, stat_buf_ptr: u32) -> u32 {
     if stat_buf_ptr == 0 {
         return EFAULT;
     }
-    // The path is read out of user memory; the StatBuf is written into it, so
-    // the two halves carry different permission requirements.
-    if !validate_user_range(path_ptr as usize, len, Access::Read)
-        || !validate_user_range(
-            stat_buf_ptr as usize,
-            core::mem::size_of::<StatBuf>(),
-            Access::Write,
-        )
-    {
+    // Validate the destination before VFS work; the actual store remains in
+    // copy_stat_to_user so no PL1 user pointer escapes the uaccess boundary.
+    if !validate_user_range(
+        stat_buf_ptr as usize,
+        core::mem::size_of::<StatBuf>(),
+        Access::Write,
+    ) {
         return EFAULT;
     }
 
-    // SAFETY: the current guard bounds this to configured DRAM only; #871
-    // owns caller-VAS mapping and permission validation.
-    let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
-    let Ok(path) = core::str::from_utf8(path_slice) else {
-        return EINVAL;
+    let mut path_storage = [0u8; MAX_PATH];
+    let path = match copy_user_path(path_ptr, len, &mut path_storage) {
+        Ok(path) => path,
+        Err(error) => return error,
     };
 
     // SAFETY: init_vfs has been called during kernel init.
@@ -994,11 +1020,8 @@ pub(crate) fn sys_stat(path_ptr: u32, path_len: u32, stat_buf_ptr: u32) -> u32 {
         file_type,
     };
 
-    // SAFETY: the current guard bounds the full StatBuf to configured DRAM;
-    // #871 owns caller-VAS mapping and write-permission validation.
-    unsafe {
-        let dst = stat_buf_ptr as *mut StatBuf;
-        core::ptr::write(dst, stat);
+    if copy_stat_to_user(stat_buf_ptr, stat).is_err() {
+        return EFAULT;
     }
 
     0
@@ -1051,9 +1074,8 @@ pub(crate) fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
             size: 0,
             file_type: S_IFREG,
         };
-        unsafe {
-            let dst = stat_buf_ptr as *mut StatBuf;
-            core::ptr::write(dst, stat);
+        if copy_stat_to_user(stat_buf_ptr, stat).is_err() {
+            return EFAULT;
         }
         return 0;
     };
@@ -1063,9 +1085,8 @@ pub(crate) fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
             size: 0,
             file_type: S_IFREG,
         };
-        unsafe {
-            let dst = stat_buf_ptr as *mut StatBuf;
-            core::ptr::write(dst, stat);
+        if copy_stat_to_user(stat_buf_ptr, stat).is_err() {
+            return EFAULT;
         }
         return 0;
     };
@@ -1091,11 +1112,8 @@ pub(crate) fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
         file_type,
     };
 
-    // SAFETY: the current guard bounds the full StatBuf to configured DRAM;
-    // #871 owns caller-VAS mapping and write-permission validation.
-    unsafe {
-        let dst = stat_buf_ptr as *mut StatBuf;
-        core::ptr::write(dst, stat);
+    if copy_stat_to_user(stat_buf_ptr, stat).is_err() {
+        return EFAULT;
     }
 
     0
@@ -1381,11 +1399,6 @@ pub(crate) fn sys_getcwd(buf_ptr: u32, size: u32) -> u32 {
     if buf_ptr == 0 {
         return EFAULT;
     }
-    // Write: the resolved path is copied INTO this buffer.
-    if !validate_user_range(buf_ptr as usize, size as usize, Access::Write) {
-        return EFAULT;
-    }
-
     // Read the current process's cwd (#437); proc0/PID 0 always has one, and
     // an absent PCB falls back to "/" rather than a bogus path.
     let (cwd_buf, cwd_len) = crate::process::with_current_cwd(|c| {
@@ -1401,13 +1414,23 @@ pub(crate) fn sys_getcwd(buf_ptr: u32, size: u32) -> u32 {
         return EINVAL;
     }
 
-    // SAFETY: the current guard bounds this to configured DRAM only; #871
-    // owns caller-VAS/write-permission validation. Size covers cwd_bytes plus the
-    // null terminator (checked above).
-    unsafe {
-        let dst = buf_ptr as *mut u8;
-        core::ptr::copy_nonoverlapping(cwd_bytes.as_ptr(), dst, cwd_bytes.len());
-        core::ptr::write(dst.add(cwd_bytes.len()), 0); // null terminator
+    // Validate only the bytes this successful call will write. `size` is an
+    // untrusted capacity, not a transfer request; walking an attacker-chosen
+    // gigabyte when cwd is a few bytes would be a syscall CPU-DoS.
+    if !validate_user_range(buf_ptr as usize, cwd_bytes.len() + 1, Access::Write) {
+        return EFAULT;
+    }
+
+    let mut output = [0u8; crate::fd::CWD_MAX + 1];
+    let Some(output_cwd) = output.get_mut(..cwd_bytes.len()) else {
+        return EINVAL;
+    };
+    output_cwd.copy_from_slice(cwd_bytes);
+    let Some(output_bytes) = output.get(..cwd_bytes.len() + 1) else {
+        return EINVAL;
+    };
+    if copy_to_user(buf_ptr as usize, output_bytes).is_err() {
+        return EFAULT;
     }
 
     0
@@ -1434,16 +1457,10 @@ pub(crate) fn sys_mkdir(path_ptr: u32, path_len: u32) -> u32 {
         return ENOENT;
     }
 
-    // Read: the path bytes are copied OUT of user memory.
-    if !validate_user_range(path_ptr as usize, len, Access::Read) {
-        return EFAULT;
-    }
-
-    // SAFETY: the current guard bounds this to configured DRAM only; #871
-    // owns caller-VAS mapping and permission validation.
-    let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
-    let Ok(path) = core::str::from_utf8(path_slice) else {
-        return EINVAL;
+    let mut path_storage = [0u8; MAX_PATH];
+    let path = match copy_user_path(path_ptr, len, &mut path_storage) {
+        Ok(path) => path,
+        Err(error) => return error,
     };
 
     vfs_mkdir(path)
@@ -1496,16 +1513,10 @@ pub(crate) fn sys_unlink(path_ptr: u32, path_len: u32) -> u32 {
         return ENOENT;
     }
 
-    // Read: the path bytes are copied OUT of user memory.
-    if !validate_user_range(path_ptr as usize, len, Access::Read) {
-        return EFAULT;
-    }
-
-    // SAFETY: the current guard bounds this to configured DRAM only; #871
-    // owns caller-VAS mapping and permission validation.
-    let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
-    let Ok(path) = core::str::from_utf8(path_slice) else {
-        return EINVAL;
+    let mut path_storage = [0u8; MAX_PATH];
+    let path = match copy_user_path(path_ptr, len, &mut path_storage) {
+        Ok(path) => path,
+        Err(error) => return error,
     };
 
     vfs_unlink(path)
@@ -1555,16 +1566,10 @@ pub(crate) fn sys_chdir(path_ptr: u32, path_len: u32) -> u32 {
         return ENOENT;
     }
 
-    // Read: the path bytes are copied OUT of user memory.
-    if !validate_user_range(path_ptr as usize, len, Access::Read) {
-        return EFAULT;
-    }
-
-    // SAFETY: the current guard bounds this to configured DRAM only; #871
-    // owns caller-VAS mapping and permission validation.
-    let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
-    let Ok(path) = core::str::from_utf8(path_slice) else {
-        return EINVAL;
+    let mut path_storage = [0u8; MAX_PATH];
+    let path = match copy_user_path(path_ptr, len, &mut path_storage) {
+        Ok(path) => path,
+        Err(error) => return error,
     };
 
     vfs_chdir(path)
@@ -2685,6 +2690,29 @@ mod tests {
         assert_eq!(&buf[..data.len()], data);
     }
 
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn write_count_is_bounded_to_a_short_transfer() {
+        static mut DATA: [u8; USER_IO_CHUNK + 1] = [b'x'; USER_IO_CHUNK + 1];
+
+        unsafe {
+            setup_test_vfs();
+        }
+        let mt = unsafe { get_mount_table_mut() }.expect("mount table");
+        let fs = mt.get_mut(0).expect("root fs");
+        fs.create(0, "bounded.txt", InodeType::RegularFile)
+            .expect("create");
+        let _ = fs;
+        let path = b"/bounded.txt";
+        let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
+        let data = core::ptr::addr_of!(DATA).cast::<u8>();
+        assert_eq!(
+            sys_write(fd, data as u32, (USER_IO_CHUNK + 1) as u32),
+            USER_IO_CHUNK as u32,
+            "an untrusted count must produce a bounded POSIX short write"
+        );
+    }
+
     // -- alloc_from tests --
 
     #[test]
@@ -2937,6 +2965,29 @@ mod tests {
             EBADF,
             "a different process must not be able to close proc0's fd number"
         );
+    }
+
+    #[test]
+    fn read_transfer_fault_does_not_advance_the_shared_offset() {
+        static mut OUT: [u8; 5] = [0u8; 5];
+
+        unsafe {
+            setup_test_vfs();
+        }
+        let path = b"/test.txt";
+        let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
+        assert_eq!(fd, 0);
+        let out = core::ptr::addr_of_mut!(OUT).cast::<u8>();
+
+        crate::memguard::fail_next_copy_to_user_for_test();
+        assert_eq!(sys_read(fd, out as u32, 5), EFAULT);
+        assert_eq!(
+            sys_read(fd, out as u32, 5),
+            5,
+            "the next read must start at the pre-fault offset"
+        );
+        let bytes = unsafe { &*core::ptr::addr_of!(OUT) };
+        assert_eq!(bytes, b"Hello");
     }
 
     /// FORK-SHARES-OFFSET: `fork()` copies the fd table, but the copied entry
