@@ -68,11 +68,16 @@ jobs:
         # silently on green (eidolon-core missing from both docs, caught
         # only by a later audit). Placed here rather than in the `kernel`
         # job: it is source-level and cheap (no build/boot artifact
-        # dependency, unlike the target-test-ledger and wiring-inventory
-        # checks below), so it belongs in the fastest job per this file's
-        # own "fastest check first" rule rather than waiting behind the
-        # kernel job's ~20-minute build+QEMU-witness chain for nothing.
+        # dependency, unlike the target-test-ledger and the kernel job's full
+        # wiring-inventory check), so it belongs in the fastest job per this
+        # file's own "fastest check first" rule rather than waiting behind
+        # the kernel job's ~20-minute build+QEMU-witness chain for nothing.
         run: scripts/check-doc-inventory.sh
+      - name: Capability-reachability source inventory check (#944)
+        # WHY (#944): docs-only PRs skip the kernel job, so run the canonical
+        # source checks here for every PR. The kernel path below still runs
+        # the same checker with its boot-log assertion after QEMU boots.
+        run: scripts/check-wiring-inventory.sh --no-log
       - name: Literal pin parity
         # WHY: crates/metaxu-core and crates/thumos cannot inherit every
         # dependency -- the first needs `default-features = false` (which
