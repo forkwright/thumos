@@ -110,21 +110,21 @@ notes = "Live 'ported from' comment: screen_dialer.rs:11. eidolon -> haphe is th
 
 [[pair]]
 name = "leipsanon"
-kernel = "panic_wipe.rs (priority ordering mirrors leipsanon's scheme, :55; target-layout paths match leipsanon, :91)"
-workspace = "leipsanon"
+kernel = "panic_wipe.rs (WipeTarget + build_panic_plan: keys-first ordered plan; /data/keys, /data/contacts, and /data/messages overlap leipsanon, but target membership and message priority diverge)"
+workspace = "leipsanon (targets.rs: WipeAction + plan; keys-first ordered plans with a broader target catalog and message priority 2 rather than the kernel's 3)"
 disposition = "extract-core"
-canonical = "planned leipsanon-core for the shared priority-ordering and target-layout policy; not yet extracted"
+canonical = "planned leipsanon-core for the shared keys-first ordered-plan primitive only; target catalogs, paths, and non-key priorities remain consumer policy unless the implementation reconciles them; not yet extracted"
 owner = "#545 (approved plan; implementation unscheduled)"
-notes = "Discovered widening the port-marker detector past literal 'ported from' phrasing (#820) -- previously invisible to the ratchet entirely, despite naming live duplication. The operator-approved #545 end-state assigns this pair to extract-core. panic_wipe.rs's priority-ordering logic is live today; the underlying filesystem write remains a stub. No extraction or convergence has happened yet, and implementation remains unscheduled."
+notes = "Discovered widening the port-marker detector past literal 'ported from' phrasing (#820) -- previously invisible to the ratchet entirely, despite naming live duplication. The operator-approved #545 end-state assigns this pair to extract-core, narrowed here to the duplicate keys-first ordered-plan mechanism: both sides target /data/keys at priority 1 and order plans by ascending priority. They are not one target-layout or priority policy. The kernel additionally targets call history, WiFi, and Bluetooth; leipsanon additionally targets /data/keys.bak, app data, /etc, /var/log, and /dev/mmcblk0; even their overlapping /data/messages target is priority 3 in the kernel and 2 in leipsanon. panic_wipe.rs's existing 'mirrors' and 'paths match' prose therefore overstates the source relationship and is not evidence for a broader core. The kernel's persisted-target write remains a stub under #863. No extraction or convergence has happened yet, and implementation remains unscheduled."
 
 [[pair]]
 name = "stegnos"
-kernel = "security.rs (passphrase-derived-key parameter matches stegnos, :24), encryption.rs (Xts128<Aes256>)"
-workspace = "stegnos (cipher.rs, Xts128<Aes256>)"
+kernel = "encryption.rs (64-byte key split, little-endian block-number tweak, and 4 KiB Xts128<Aes256> transform); security.rs's fixed compatibility PBKDF2 path is separate under #914"
+workspace = "stegnos (cipher.rs: the same 64-byte key split, little-endian block-number tweak, and 4 KiB Xts128<Aes256> transform; keys.rs/config.rs persist and bound a separate KDF configuration)"
 disposition = "extract-core"
-canonical = "planned stegnos-core for the shared AES-XTS and passphrase-derived-key policy; not yet extracted"
+canonical = "planned stegnos-core for the duplicated AES-256-XTS block-transform seam only; passphrase KDF policy remains separate; not yet extracted"
 owner = "#545 (approved plan; implementation unscheduled)"
-notes = "Discovered widening the port-marker detector past literal 'ported from' phrasing (#820) -- previously invisible to the ratchet entirely, despite naming live duplication. The operator-approved #545 end-state assigns this pair to extract-core. encryption.rs and stegnos/src/cipher.rs both build Xts128<Aes256>; security.rs's PBKDF2_ITERATIONS doc comment records the passphrase-derived-key parameter as matching stegnos. No extraction or convergence has happened yet, and implementation remains unscheduled."
+notes = "Discovered widening the port-marker detector past literal 'ported from' phrasing (#820) -- previously invisible to the ratchet entirely, despite naming live duplication. The operator-approved #545 end-state assigns this pair to extract-core, narrowed here to the current AES-XTS duplication: encryption.rs and stegnos/src/cipher.rs both split one 64-byte key into two AES-256 keys, encode the logical block number as a 16-byte little-endian tweak, and transform one 4 KiB block with Xts128<Aes256>. Passphrase derivation is explicitly outside that seam. The kernel's PBKDF2 value is a frozen compatibility input that cannot move before #914 adds a versioned parameter record; stegnos persists an iteration count in KeySlot and validates it against configured bounds. Commit 36786fd removed the stale 'Matches stegnos' claim from security.rs; the two defaults both being 100,000 is numeric coincidence, not a shared security policy. No extraction or convergence has happened yet, and implementation remains unscheduled."
 
 [[pair]]
 name = "skipped-key-cache"
