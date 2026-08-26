@@ -412,16 +412,24 @@ fn irq_handler_body() {
         // (#875). Withholding is how the reset happens; nothing here disables
         // the watchdog.
         //
-        // SAFETY: decide() touches only the IRQ-exclusive gate, and
-        // watchdog::pet() writes WDT_RESTART MMIO -- both from the timer IRQ
-        // at 100 Hz, non-reentrant on this single core, after watchdog::init().
+        // SAFETY: observe_tick()/decide() touch only IRQ-exclusive watchdog
+        // state, and watchdog::pet() writes WDT_RESTART MMIO -- all from the
+        // timer IRQ at 100 Hz, non-reentrant on this single core, after
+        // watchdog::init(), which kinit completes before enabling this timer.
+        // QEMU's observe_tick models the autonomous hardware countdown and
+        // exits if a withheld pet reaches its deadline.
         unsafe {
+            watchdog::observe_tick(now);
             match crate::liveness::decide(now) {
                 crate::liveness::PetDecision::Pet => watchdog::pet(),
                 crate::liveness::PetDecision::Withhold {
                     owner,
                     stalled_ticks,
-                } => crate::liveness::report_withheld(owner, stalled_ticks),
+                } => {
+                    #[cfg(all(feature = "qemu", feature = "watchdog-shutdown-hang-probe"))]
+                    watchdog::probe_late_shutdown_reentry(now);
+                    crate::liveness::report_withheld(owner, stalled_ticks);
+                }
             }
         }
 

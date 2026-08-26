@@ -210,30 +210,7 @@ impl Console {
 
     fn cmd_reboot(&mut self) {
         let _ = self.serial.write_str("rebooting...\r\n"); // WHY: best-effort serial write; kernel cannot block on failed UART output
-        // NOTE: ARM watchdog reset
-        // SAFETY: WDT_MODE and WDT_SWRST are MT6739 watchdog MMIO registers at known addresses.
-        unsafe {
-            // Write to the MT6739 watchdog to trigger a reset
-            // WDT_MODE at 0x10007000, SET bit 0 (enable) + key 0x2200
-            let wdt_mode = 0x1000_7000 as *mut u32;
-            core::ptr::write_volatile(wdt_mode, 0x2200_0001);
-            // WDT_SWRST at 0x10007014, write key to trigger
-            let wdt_swrst = 0x1000_7014 as *mut u32;
-            core::ptr::write_volatile(wdt_swrst, 0x1209);
-        }
-        // WHY(#459): wfi has no i686 encoding, so the host-test build gates
-        // this whole loop out; the reboot path never returns in production
-        // anyway, and no host test calls cmd_reboot. Gating the STATEMENT
-        // (not a `break` inside it) means the test build never contains a
-        // loop that runs its body once and exits -- clippy::never_loop has
-        // nothing to flag there, because there is no loop there at all.
-        #[cfg(not(test))]
-        loop {
-            // SAFETY: wfi is a safe wait-for-interrupt instruction accessible at EL1.
-            unsafe {
-                core::arch::asm!("wfi");
-            }
-        }
+        crate::shutdown::reboot();
     }
 }
 

@@ -93,10 +93,10 @@ notes = "PowerManager policy state is boot/service-loop reachable, but radio sta
 
 [[capability]]
 id = "watchdog"
-modules = ["watchdog", "liveness"]
+modules = ["watchdog", "watchdog_qemu", "liveness", "shutdown"]
 tier = "kernel-wired"
-notes = "The MT6739 watchdog path is boot-reachable and the timer IRQ pets it only while every liveness owner is still advancing (#875) -- the scheduler round and the PID-0 service loop, each with its own stall deadline well inside the 5-second hardware period. Withholding is how the reset happens; the gate never disables the watchdog. No live-hardware receipt asserts the physical reset."
-hardware_reason = "After #875 lands, an operator-owned physical reset/deadline receipt is still required."
+notes = "The MT6739 watchdog path is boot-reachable and the timer IRQ pets it only while every liveness owner is still advancing (#875) -- the scheduler round and the PID-0 service loop, each with its own stall deadline well inside the 5-second hardware period. Controlled reboot crosses one coordinator that enters an immutable bounded grace before requesting reset. QEMU models the countdown and fault-injects both a frozen owner and a reset backend that returns; the latter observes the final grace pet, rejects late grace renewal, and expires after withholding."
+hardware_reason = "The QEMU model proves software wiring only; an operator-owned AGM M7 session must still witness the physical reset cause and deadline."
 
 [[capability]]
 id = "battery-monitor"

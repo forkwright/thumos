@@ -94,13 +94,22 @@ input, clock, telephony/audio/SIM/BT/firewall state machines, and the PL0
 isolation probes) — read it directly for the full assertion list rather
 than trusting a paraphrase here.
 
+`scripts/witness/watchdog.sh` is the liveness exception: a successful ordinary
+boot proves nothing about a watchdog absent from qemu-virt. It runs three
+boots: a controlled reboot (expected exit 8), a frozen-PID-0 negative, and an
+accepted shutdown whose reset backend is forced to return. Both negative boots
+must withhold pets and expire the modeled countdown (expected exit 7); the hung
+shutdown additionally pins the final grace pet and rejects late grace renewal.
+
 ## Common issues
 
 | Symptom | Likely cause | Resolution |
 |---|---|---|
 | `qemu-runner.sh` exits 127 | `qemu-system-arm` not installed | Install it (command printed by the runner itself); see toolchain setup above |
-| `qemu-runner.sh` exits 124 | Guest hung past `THUMOS_QEMU_TIMEOUT` (default 60s) | Not a bare timeout — every real failure path exits with a named code first (0/1/2/3/4/5); 124 alone means the guest never reached any exit path. Attach GDB (below) rather than guessing |
+| `qemu-runner.sh` exits 124 | Guest hung past `THUMOS_QEMU_TIMEOUT` (default 60s) | Not a bare timeout — every real failure path exits with a named code first (0-9); 124 alone means the guest never reached any exit path. Attach GDB (below) rather than guessing |
 | `qemu-runner.sh` exits 5 | Service-loop stall — the tick source (#461 class) is not advancing | Check `boot.log` for `kardia: timer elapsed_ms=advancing`; a missing line points at a CNTFRQ/CNTPCT regression |
+| `qemu-runner.sh` exits 7 or 8 | A watchdog witness reached modeled expiry (7) or controlled reboot (8) | Expected only from `scripts/witness/watchdog.sh`; read its named assertions if either status appears elsewhere |
+| `qemu-runner.sh` exits 9 | A watchdog fault-injection invariant failed before the expected expiry | Read the `THUMOS-QEMU: watchdog probe failure` line from `scripts/witness/watchdog.sh` |
 | `qemu-runner.sh` exits 1 | Kernel panic or non-zero guest exit | Read `boot.log` in full (the runner always prints it) for the panic message before the exit |
 | `scripts/kernel-build.sh` fails on a new warning | The `-D warnings` gate in `crates/thumos/.cargo/config.toml` is always on (#431) | Fix the warning. Never pass `RUSTFLAGS` through the environment when building the kernel — it clobbers the config's rustflags and silently drops this gate |
 | `scripts/kernel-host-tests.sh` fails to link | 32-bit crt objects missing | `gcc-multilib` (Debian/Ubuntu) or `glibc-devel.i686` (Fedora) — the script's own probe step names the fix |
