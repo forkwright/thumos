@@ -7,7 +7,7 @@ set -euo pipefail
 # stops the run with the witness's own named assertion.
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-for w in boot kfault sleep fork exec forkexec guard brk signal crashloop metaxu metaxu-negative; do
+for w in boot watchdog kfault sleep fork exec forkexec guard brk signal crashloop metaxu metaxu-negative; do
     echo "===== witness: $w ====="
     "$HERE/witness/$w.sh" || exit 1
 done
