@@ -73,11 +73,6 @@ jobs:
         # file's own "fastest check first" rule rather than waiting behind
         # the kernel job's ~20-minute build+QEMU-witness chain for nothing.
         run: scripts/check-doc-inventory.sh
-      - name: Capability-reachability source inventory check (#944)
-        # WHY (#944): docs-only PRs skip the kernel job, so run the canonical
-        # source checks here for every PR. The kernel path below still runs
-        # the same checker with its boot-log assertion after QEMU boots.
-        run: scripts/check-wiring-inventory.sh --no-log
       - name: Literal pin parity
         # WHY: crates/metaxu-core and crates/thumos cannot inherit every
         # dependency -- the first needs `default-features = false` (which
@@ -161,15 +156,26 @@ jobs:
       # combination except success + literal true takes the full build path.
       DOCS_ONLY: ${{ needs.docs-only.result == 'success' && needs.docs-only.outputs.docs_only == 'true' }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Capability-reachability source inventory check (#944)
+        # WHY (#944): this job name is branch-protection-required and always
+        # reports, including for docs-only changes. Run the canonical source
+        # checker before the exemption so malformed inventory cannot receive a
+        # vacuous required-context success. The post-boot invocation below
+        # remains the owner of witness-log assertions on non-doc changes.
+        run: scripts/check-wiring-inventory.sh --no-log
+      - name: Docs-only required-kernel topology regression (#944)
+        # WHY (#944): a passing source check proves only the positive fixture.
+        # This asserts the required-job ordering/guards and makes the canonical
+        # checker reject a deliberately malformed isolated inventory.
+        run: scripts/check-docs-only-kernel-gate.sh
       - name: Report docs-only kernel exemption (#775)
         if: env.DOCS_ONLY == 'true'
         # WHY: the required check context must still report. Every build and
         # witness step below runs unless the shared preflight says literal true.
         run: echo "Shared preflight classified this changeset as docs-only; kernel build and witnesses skipped."
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: env.DOCS_ONLY != 'true'
-        with:
-          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         if: env.DOCS_ONLY != 'true'
         with:
