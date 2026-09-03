@@ -19,7 +19,7 @@ extern crate alloc;
 
 use core::fmt;
 
-use crate::security::{self, KEY_SIZE, PBKDF2_ITERATIONS, SecurityError, SleepTier, XTS_KEY_SIZE};
+use crate::security::{self, KEY_SIZE, SecurityError, SleepTier, XTS_KEY_SIZE};
 
 // ---------------------------------------------------------------------------
 // HKDF labels
@@ -229,19 +229,29 @@ impl KeyManager {
     /// salt is public by design), and read back on every boot. It is what
     /// makes brute-force resistance per-DEVICE rather than per-image.
     ///
-    /// Uses [`PBKDF2_ITERATIONS`] rounds.
+    /// `kdf` comes from the device's own secrets preamble (#914), never from a
+    /// policy constant. The master key IS this derivation's output, so deriving
+    /// under different parameters than the ones that produced it yields a
+    /// different key and an unreadable partition -- the failure would surface
+    /// as a rejected passphrase, which is the most misleading form it could
+    /// take.
     ///
     /// # Errors
     ///
-    /// Returns [`SecurityError`] if key derivation fails.
+    /// Returns [`SecurityError`] if key derivation fails, including when
+    /// Argon2id's memory was unavailable -- never a silently cheaper key.
     pub(crate) fn derive_from_passphrase(
         passphrase: &[u8],
         salt: &[u8],
+        kdf: security::PinKdf,
     ) -> Result<SecureKey<KEY_SIZE>, SecurityError> {
-        let mut key_bytes = [0u8; KEY_SIZE];
-        let derive_result =
-            security::pbkdf2_sha256(passphrase, salt, PBKDF2_ITERATIONS, &mut key_bytes);
-        let result = derive_result.map(|()| SecureKey::new(key_bytes));
+        let derive_result = security::derive_under(kdf, passphrase, salt);
+        let mut key_bytes = derive_result.unwrap_or([0u8; KEY_SIZE]);
+        let result = if derive_result.is_ok() {
+            Ok(SecureKey::new(key_bytes))
+        } else {
+            Err(SecurityError::KeyDerivationFailed)
+        };
         // WHY: zero the stack copy on every path (success or error) — see
         // volatile_zero's doc comment. key_bytes is Copy, so SecureKey::new
         // above (on success) left this array fully populated (#325).
@@ -606,12 +616,20 @@ mod tests {
         // point -- 100k PBKDF2 iterations with the injected device salt --
         // not just the low-iteration derive_test_primary helper every other
         // test in this module uses for speed.
-        let key1 = KeyManager::derive_from_passphrase(b"production entry point test", TEST_SALT)
-            .expect("derive_from_passphrase must succeed");
+        let key1 = KeyManager::derive_from_passphrase(
+            b"production entry point test",
+            TEST_SALT,
+            crate::secrets::V1_KDF,
+        )
+        .expect("derive_from_passphrase must succeed");
         assert!(!key1.is_zero(), "derived primary key must not be all zeros");
 
-        let key2 = KeyManager::derive_from_passphrase(b"production entry point test", TEST_SALT)
-            .expect("derive_from_passphrase must succeed");
+        let key2 = KeyManager::derive_from_passphrase(
+            b"production entry point test",
+            TEST_SALT,
+            crate::secrets::V1_KDF,
+        )
+        .expect("derive_from_passphrase must succeed");
         assert_eq!(
             key1.as_bytes(),
             key2.as_bytes(),
@@ -626,14 +644,78 @@ mod tests {
         // brute-force/rainbow resistance is per-device, not per-image.
         let salt_a: &[u8] = b"device-a-persisted-salt";
         let salt_b: &[u8] = b"device-b-persisted-salt";
-        let key_a = KeyManager::derive_from_passphrase(b"the same user passphrase", salt_a)
-            .expect("derive with salt A");
-        let key_b = KeyManager::derive_from_passphrase(b"the same user passphrase", salt_b)
-            .expect("derive with salt B");
+        let key_a = KeyManager::derive_from_passphrase(
+            b"the same user passphrase",
+            salt_a,
+            crate::secrets::V1_KDF,
+        )
+        .expect("derive with salt A");
+        let key_b = KeyManager::derive_from_passphrase(
+            b"the same user passphrase",
+            salt_b,
+            crate::secrets::V1_KDF,
+        )
+        .expect("derive with salt B");
         assert_ne!(
             key_a.as_bytes(),
             key_b.as_bytes(),
             "same passphrase + different device salts must derive different primary keys"
+        );
+    }
+
+    #[test]
+    fn derive_from_passphrase_differs_per_kdf_parameters() {
+        // #914's own done-when: the KDF record is pointless if two different
+        // recorded parameter sets, for the same passphrase and salt, could
+        // silently derive the same key -- that would mean the record is
+        // decorative, not load-bearing.
+        let low = security::PinKdf::Pbkdf2Sha256 { iterations: 1 };
+        let high = security::PinKdf::Pbkdf2Sha256 { iterations: 2 };
+        let key_low =
+            KeyManager::derive_from_passphrase(b"same passphrase, same salt", TEST_SALT, low)
+                .expect("derive under the low-iteration record");
+        let key_high =
+            KeyManager::derive_from_passphrase(b"same passphrase, same salt", TEST_SALT, high)
+                .expect("derive under the high-iteration record");
+        assert_ne!(
+            key_low.as_bytes(),
+            key_high.as_bytes(),
+            "same passphrase + same salt + different recorded KDF parameters must derive different keys (#914 done-when)"
+        );
+    }
+
+    #[test]
+    fn v1_kdf_matches_independent_pbkdf2_known_answer() {
+        // The gap the v1 fixture cannot close: it proves parse() routes a v1
+        // sector to whatever V1_KDF currently IS, not that V1_KDF's value is
+        // what real v1 devices were written with. This vector pins the value
+        // itself. Exact inputs: passphrase "thumos v1 known-answer" (21 ASCII
+        // bytes, no NUL), salt bytes 0x00..=0x1f in order, PBKDF2-HMAC-SHA256
+        // at exactly 100,000 iterations, dkLen 32 — the raw RFC 8018
+        // construction, which `derive_under` reaches with no personalization
+        // or domain separation (security.rs:635-639). Expected bytes derived
+        // independently of this crate: OpenSSL via Python's
+        // hashlib.pbkdf2_hmac('sha256', ...), cross-checked against a
+        // from-scratch RFC 2898 block composition in pure Python; both
+        // references agree on these bytes. A typo'd or silently repriced
+        // iteration count fails here instead of surfacing on a provisioned
+        // device as a rejected passphrase.
+        let salt: [u8; 32] = core::array::from_fn(|i| i as u8);
+        let expected: [u8; KEY_SIZE] = [
+            0xea, 0x68, 0xff, 0x8c, 0xcb, 0x19, 0x3a, 0x44, 0x65, 0xbb, 0x40, 0x5b, 0x20, 0x3d,
+            0xf0, 0x08, 0x68, 0x20, 0x01, 0xf9, 0xdb, 0x1e, 0xcf, 0x43, 0x53, 0x43, 0xa7, 0xba,
+            0xb7, 0x16, 0x5e, 0x5e,
+        ];
+        let derived = KeyManager::derive_from_passphrase(
+            b"thumos v1 known-answer",
+            &salt,
+            crate::secrets::V1_KDF,
+        )
+        .expect("derive under V1_KDF");
+        assert_eq!(
+            derived.as_bytes(),
+            &expected,
+            "V1_KDF must be PBKDF2-HMAC-SHA256 at exactly 100,000 iterations -- the parameters every v1 device's master key was derived with (#914)"
         );
     }
 

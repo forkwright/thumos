@@ -212,6 +212,9 @@ fn boot_verify_loop(
         return false;
     };
     let salt = secrets.salt;
+    // The KDF this device's key was actually made with, from its own record --
+    // never the current policy constant, which may already have moved on (#914).
+    let kdf = secrets.kdf;
     loop {
         let tick = crate::exceptions::uptime_ms() / 1000;
         lock.advance_tick(tick);
@@ -225,7 +228,7 @@ fn boot_verify_loop(
                         let result = lock.submit_passphrase_with(tick, |entered| {
                             let Ok(primary) =
                                 crate::key_manager::KeyManager::derive_from_passphrase(
-                                    entered, &salt,
+                                    entered, &salt, kdf,
                                 )
                             else {
                                 return false;
@@ -350,6 +353,7 @@ fn boot_setup_loop(
                                     crate::key_manager::KeyManager::derive_from_passphrase(
                                         lock.passphrase_bytes(),
                                         &salt,
+                                        crate::secrets::MASTER_KDF,
                                     )
                                     && let Ok(verifier) =
                                         crate::key_manager::KeyManager::derive_boot_verifier(
@@ -359,6 +363,7 @@ fn boot_setup_loop(
                                         preamble_view,
                                         &salt,
                                         &verifier,
+                                        crate::secrets::MASTER_KDF,
                                     )
                                     .is_ok()
                                     && key_manager.derive_partition_keys(&primary).is_ok()

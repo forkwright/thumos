@@ -316,7 +316,7 @@ fidelity = "constant table only — nothing target-executed to diverge"
 
 [[module]]
 name = "key_manager"
-tests = 16
+tests = 18
 mechanism = "host"
 fidelity = "Deterministic KDF mechanics are host-covered; #872 owns boot-secret/KDF acceptance and #873 owns non-repeating CSPRNG reseed state before device qualification"
 
@@ -592,7 +592,7 @@ witness = "boot.sh"
 
 [[module]]
 name = "secrets"
-tests = 14
+tests = 15
 mechanism = "host"
 fidelity = "Provision/read is proven on the RAM double; #866 blocks plaintext userdata setup, #870 blocks the ungrounded eMMC read field, #878 owns authenticated/versioned rollback-resistant persistence, and #872 owns boot-secret acceptance before an operator-owned M7 receipt"
 

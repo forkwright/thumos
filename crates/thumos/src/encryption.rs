@@ -339,6 +339,7 @@ impl From<SecurityError> for BlockError {
             SecurityError::InvalidKeyLength
             | SecurityError::ZeroIterations
             | SecurityError::HkdfOutputTooLong
+            | SecurityError::KeyDerivationFailed
             | SecurityError::InvalidBlockSize => BlockError::InvalidArgument,
             SecurityError::CipherError => BlockError::IoError,
         }

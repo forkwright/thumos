@@ -12,13 +12,40 @@
 //!
 //! ```text
 //! [0..8)    magic "THSECR\0\0"
-//! [8..12)   format version, u32 LE (= 1)
-//! [12..16)  slot count, u32 LE (1 = salt only; 2 = salt + boot verifier)
+//! [8..12)   format version, u32 LE (1 or 2 — see below)
+//! [12..16)  slot count, u32 LE
 //! [16..48)  integrity tag: SHA-256 of the sector with these 32 bytes zeroed
 //! [48..80)  slot 1 payload: the device salt (32 bytes, plaintext)
 //! [80..112) slot 2 payload: boot passphrase verifier (32 bytes, plaintext)
-//! [112..512) zero (future slots)
+//! [112..128) slot 5 payload: master-KDF record (v2 only, see below)
+//! [128..512) zero (future slots)
 //! ```
+//!
+//! # Format versions (#914)
+//!
+//! **v1** carries no KDF record, and a v1 device's master key is derived with
+//! [`V1_KDF`] — PBKDF2-HMAC-SHA256 at 100,000 iterations. That is not a
+//! default this code falls back to; it is what v1 *means*, because it is the
+//! only thing every v1 device was ever written with. Stating it here and
+//! testing it is the difference between a defined format and an invariant that
+//! happens to hold because nobody has edited a constant.
+//!
+//! **v2** carries the KDF and its parameters in slot 5, so the cost can be
+//! raised on new devices without making every existing partition unreadable.
+//! The master key IS the derivation output: change the parameters for a
+//! provisioned device and its data is gone. A record is what makes the
+//! difference between a migration and a brick.
+//!
+//! ```text
+//! [112..116) KDF id, u32 LE: 1 = PBKDF2-HMAC-SHA256, 2 = Argon2id
+//! [116..120) param 0, u32 LE: PBKDF2 iterations   | Argon2id m_cost (KiB)
+//! [120..124) param 1, u32 LE: 0                   | Argon2id t_cost
+//! [124..128) param 2, u32 LE: 0                   | Argon2id p_cost
+//! ```
+//!
+//! Slot counts are version-specific because the KDF record is mandatory in v2:
+//! v1 accepts 1 (salt) or 2 (salt + verifier); v2 accepts 2 (salt + KDF) or 3
+//! (salt + KDF + verifier).
 //!
 //! Slot kinds: 1 = device salt (populated today); 2 = BT IRK (reserved,
 //! sealed — #455 stage 2); 3 = vault PIN verifier (reserved, sealed —
@@ -51,8 +78,57 @@ use crate::block::{BlockDevice, BlockError, SECTOR_SIZE};
 /// Header magic: "THSECR\0\0".
 pub(crate) const MAGIC: [u8; 8] = *b"THSECR\0\0";
 
-/// Preamble format version.
-pub(crate) const VERSION: u32 = 1;
+/// Preamble format version written by every new provisioning (#914).
+pub(crate) const VERSION: u32 = 2;
+
+/// The oldest format version this kernel still reads.
+const VERSION_V1: u32 = 1;
+
+/// What a v1 preamble means (#914).
+///
+/// v1 stored no KDF record, so every v1 device's master key was derived with
+/// exactly this. Defining it as a constant rather than reaching for
+/// `PBKDF2_ITERATIONS` is deliberate: that constant is a *current policy*
+/// value and may be raised, while this is a *historical fact* about bytes
+/// already on devices. If the two were one symbol, raising policy would
+/// silently redefine what every existing device's key is, and the partition
+/// would stop opening.
+pub(crate) const V1_KDF: crate::security::PinKdf = crate::security::PinKdf::Pbkdf2Sha256 {
+    iterations: 100_000,
+};
+
+/// The KDF every new provisioning writes into its v2 record (#914).
+///
+/// Deliberately still PBKDF2 at the v1 cost, so this change is structural: no
+/// device's key moves, and nothing about boot latency changes. What it buys is
+/// that the cost is now a value in a record rather than a constant compiled
+/// into the reader, so raising it is a migration instead of a brick.
+///
+/// Raising it to Argon2id — the construction #272 chose for every other secret
+/// in this kernel — is now a one-line edit here. It is not made here because
+/// the master key is derived on the live boot path, and the number that
+/// decision needs is how long Argon2id takes on the M7, which cannot be
+/// measured from a host or from QEMU. #272 shipped Argon2id for the secret
+/// verifiers without that number because none of them has a production caller
+/// yet; this one does.
+pub(crate) const MASTER_KDF: crate::security::PinKdf = V1_KDF;
+
+/// Byte offset of the v2 master-KDF record.
+const KDF_OFFSET: usize = 112;
+
+/// Bytes the KDF record occupies: id + three parameters.
+const KDF_LEN: usize = 16;
+
+// INVARIANT: the KDF record fits the sector and starts after the verifier
+// slot. Both are fixed today; asserting it means a future slot added at the
+// wrong offset fails to build rather than silently overlapping a field whose
+// corruption reads as a wrong passphrase.
+const _: () = assert!(KDF_OFFSET >= VERIFIER_OFFSET + VERIFIER_LEN);
+const _: () = assert!(KDF_OFFSET + KDF_LEN <= SECTOR_SIZE);
+
+/// On-disk KDF identifiers. Stable: these name bytes already written.
+const KDF_ID_PBKDF2_SHA256: u32 = 1;
+const KDF_ID_ARGON2ID: u32 = 2;
 
 /// Device-salt payload length in bytes.
 pub(crate) const SALT_LEN: usize = 32;
@@ -85,6 +161,9 @@ pub(crate) struct DeviceSecrets {
     /// when first-boot setup has stored one. `None` means the device has
     /// never set a boot passphrase — the first-boot setup path.
     pub(crate) boot_verifier: Option<[u8; VERIFIER_LEN]>,
+    /// The KDF that produced — and must reproduce — this device's master key
+    /// (#914). Read from slot 5 on a v2 header, and [`V1_KDF`] on a v1 one.
+    pub(crate) kdf: crate::security::PinKdf,
 }
 
 /// Outcome of parsing a preamble sector image (#621).
@@ -129,13 +208,22 @@ fn parse(sector: &[u8; SECTOR_SIZE]) -> PreambleStatus {
     }
     let mut version_bytes = [0u8; 4];
     version_bytes.copy_from_slice(&sector[VERSION_OFFSET..VERSION_OFFSET + 4]);
-    if u32::from_le_bytes(version_bytes) != VERSION {
+    let version = u32::from_le_bytes(version_bytes);
+    if version != VERSION && version != VERSION_V1 {
         return PreambleStatus::Corrupt;
     }
     let mut count_bytes = [0u8; 4];
     count_bytes.copy_from_slice(&sector[SLOT_COUNT_OFFSET..SLOT_COUNT_OFFSET + 4]);
     let count = u32::from_le_bytes(count_bytes);
-    if count != 1 && count != 2 {
+    // The KDF record is mandatory in v2, so the accepted counts differ by
+    // version: a v2 header with a v1 count is missing the record entirely and
+    // must not be read as though it were merely verifier-less.
+    let accepted = if version == VERSION_V1 {
+        count == 1 || count == 2
+    } else {
+        count == 2 || count == 3
+    };
+    if !accepted {
         return PreambleStatus::Corrupt;
     }
     if sector[INTEGRITY_OFFSET..INTEGRITY_OFFSET + 32] != integrity_of(sector) {
@@ -149,7 +237,12 @@ fn parse(sector: &[u8; SECTOR_SIZE]) -> PreambleStatus {
         // integrity both checked out, so this is corruption, not absence.
         return PreambleStatus::Corrupt;
     }
-    let boot_verifier = if count == 2 {
+    let has_verifier = if version == VERSION_V1 {
+        count == 2
+    } else {
+        count == 3
+    };
+    let boot_verifier = if has_verifier {
         let mut v = [0u8; VERIFIER_LEN];
         v.copy_from_slice(&sector[VERIFIER_OFFSET..VERIFIER_OFFSET + VERIFIER_LEN]);
         if v.iter().all(|&b| b == 0) {
@@ -161,24 +254,98 @@ fn parse(sector: &[u8; SECTOR_SIZE]) -> PreambleStatus {
     } else {
         None
     };
+    let kdf = if version == VERSION_V1 {
+        V1_KDF
+    } else {
+        match parse_kdf(sector) {
+            Some(k) => k,
+            // An unreadable KDF record on a v2 header is corruption, not a
+            // reason to fall back to V1_KDF: falling back would derive a key
+            // this device never used and report it as a wrong passphrase.
+            None => return PreambleStatus::Corrupt,
+        }
+    };
     PreambleStatus::Valid(DeviceSecrets {
         salt,
         boot_verifier,
+        kdf,
     })
 }
 
-/// Render a header sector around `salt`, optionally carrying the boot
-/// verifier (slot count 2 when present, 1 otherwise).
-fn render(salt: &[u8; SALT_LEN], verifier: Option<&[u8; VERIFIER_LEN]>) -> [u8; SECTOR_SIZE] {
+/// Read the v2 master-KDF record, or `None` when it does not describe a KDF
+/// this kernel implements.
+fn parse_kdf(sector: &[u8; SECTOR_SIZE]) -> Option<crate::security::PinKdf> {
+    let field = |i: usize| -> u32 {
+        let at = KDF_OFFSET + i * 4;
+        let mut b = [0u8; 4];
+        b.copy_from_slice(&sector[at..at + 4]);
+        u32::from_le_bytes(b)
+    };
+    match field(0) {
+        KDF_ID_PBKDF2_SHA256 => {
+            let iterations = field(1);
+            // A zero work factor is not a weak KDF, it is no KDF; refusing it
+            // keeps a corrupt record from becoming a fast oracle.
+            (iterations > 0).then_some(crate::security::PinKdf::Pbkdf2Sha256 { iterations })
+        }
+        KDF_ID_ARGON2ID => {
+            let (m_cost_kib, t_cost, p_cost) = (field(1), field(2), field(3));
+            (m_cost_kib > 0 && t_cost > 0 && p_cost > 0).then_some(
+                crate::security::PinKdf::Argon2id {
+                    m_cost_kib,
+                    t_cost,
+                    p_cost,
+                },
+            )
+        }
+        _ => None,
+    }
+}
+
+/// Write the v2 master-KDF record into `sector`.
+fn render_kdf(sector: &mut [u8; SECTOR_SIZE], kdf: crate::security::PinKdf) {
+    let mut put = |i: usize, v: u32| {
+        let at = KDF_OFFSET + i * 4;
+        sector[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    };
+    match kdf {
+        crate::security::PinKdf::Pbkdf2Sha256 { iterations } => {
+            put(0, KDF_ID_PBKDF2_SHA256);
+            put(1, iterations);
+        }
+        crate::security::PinKdf::Argon2id {
+            m_cost_kib,
+            t_cost,
+            p_cost,
+        } => {
+            put(0, KDF_ID_ARGON2ID);
+            put(1, m_cost_kib);
+            put(2, t_cost);
+            put(3, p_cost);
+        }
+    }
+}
+
+/// Render a header sector around `salt` and its v2 master-KDF record,
+/// optionally carrying the boot verifier (slot count 3 when the verifier is
+/// present, 2 otherwise -- v2 always carries the KDF record, so the count
+/// never drops to the v1 1-or-2).
+fn render(
+    salt: &[u8; SALT_LEN],
+    verifier: Option<&[u8; VERIFIER_LEN]>,
+    kdf: crate::security::PinKdf,
+) -> [u8; SECTOR_SIZE] {
     let mut sector = [0u8; SECTOR_SIZE];
     sector[..8].copy_from_slice(&MAGIC);
     sector[VERSION_OFFSET..VERSION_OFFSET + 4].copy_from_slice(&VERSION.to_le_bytes());
-    let count: u32 = u32::from(verifier.is_some()) + 1;
+    // v2 always carries the KDF record, so the count starts at salt + KDF.
+    let count: u32 = u32::from(verifier.is_some()) + 2;
     sector[SLOT_COUNT_OFFSET..SLOT_COUNT_OFFSET + 4].copy_from_slice(&count.to_le_bytes());
     sector[SALT_OFFSET..SALT_OFFSET + SALT_LEN].copy_from_slice(salt);
     if let Some(v) = verifier {
         sector[VERIFIER_OFFSET..VERIFIER_OFFSET + VERIFIER_LEN].copy_from_slice(v);
     }
+    render_kdf(&mut sector, kdf);
     let tag = integrity_of(&sector);
     sector[INTEGRITY_OFFSET..INTEGRITY_OFFSET + 32].copy_from_slice(&tag);
     sector
@@ -243,12 +410,13 @@ pub(crate) fn load_or_provision<D: BlockDevice>(
         return Err(ProvisionError::DegenerateSalt);
     }
 
-    let rendered = render(&salt, None);
+    let rendered = render(&salt, None, MASTER_KDF);
     dev.write_sectors(0, 1, &rendered)
         .map_err(ProvisionError::Io)?;
     Ok(DeviceSecrets {
         salt,
         boot_verifier: None,
+        kdf: MASTER_KDF,
     })
 }
 
@@ -313,12 +481,19 @@ pub(crate) fn store_boot_verifier<D: BlockDevice>(
     dev: &mut D,
     salt: &[u8; SALT_LEN],
     verifier: &[u8; VERIFIER_LEN],
+    kdf: crate::security::PinKdf,
 ) -> Result<DeviceSecrets, BlockError> {
-    let rendered = render(salt, Some(verifier));
+    // WHY the caller passes the KDF rather than this reaching for MASTER_KDF:
+    // storing a verifier does not re-derive the master key, so the record must
+    // keep naming whatever produced the key already in use. Substituting the
+    // current policy here would rewrite a provisioned device's KDF without
+    // rewriting its key, and the next boot would refuse a correct passphrase.
+    let rendered = render(salt, Some(verifier), kdf);
     dev.write_sectors(0, 1, &rendered)?;
     Ok(DeviceSecrets {
         salt: *salt,
         boot_verifier: Some(*verifier),
+        kdf,
     })
 }
 
@@ -416,6 +591,7 @@ mod tests {
             PreambleStatus::Valid(DeviceSecrets {
                 salt: secrets.salt,
                 boot_verifier: None,
+                kdf: MASTER_KDF,
             }),
             "header parses to the provisioned salt, no verifier yet"
         );
@@ -530,12 +706,68 @@ mod tests {
         v
     }
 
+    /// A literal v1-format sector, built byte-for-byte from the documented
+    /// layout rather than through [`render`], which only ever writes v2
+    /// today. A specimen produced by calling this file's own writer would
+    /// still pass even if the writer and the reader had drifted together --
+    /// this one is independent of both, the way a real pre-#914 device on
+    /// disk is.
+    fn v1_sector(salt: [u8; SALT_LEN], verifier: Option<[u8; VERIFIER_LEN]>) -> [u8; SECTOR_SIZE] {
+        let mut sector = [0u8; SECTOR_SIZE];
+        sector[..8].copy_from_slice(b"THSECR\0\0");
+        sector[VERSION_OFFSET..VERSION_OFFSET + 4].copy_from_slice(&1u32.to_le_bytes());
+        let count: u32 = if verifier.is_some() { 2 } else { 1 };
+        sector[SLOT_COUNT_OFFSET..SLOT_COUNT_OFFSET + 4].copy_from_slice(&count.to_le_bytes());
+        sector[SALT_OFFSET..SALT_OFFSET + SALT_LEN].copy_from_slice(&salt);
+        if let Some(v) = verifier {
+            sector[VERIFIER_OFFSET..VERIFIER_OFFSET + VERIFIER_LEN].copy_from_slice(&v);
+        }
+        let tag = integrity_of(&sector);
+        sector[INTEGRITY_OFFSET..INTEGRITY_OFFSET + 32].copy_from_slice(&tag);
+        sector
+    }
+
+    #[test]
+    fn v1_preamble_bytes_parse_under_v1_kdf() {
+        // A real pre-#914 device wrote no KDF record and no slot 5 -- salt
+        // only (slot count 1) before any passphrase was set, salt + verifier
+        // (slot count 2) after. Both must still parse, and both must resolve
+        // exactly [`V1_KDF`]: that is the whole backward-compatibility claim
+        // this change makes, and until this test, nothing checked it against
+        // bytes the current writer never produces.
+        let salt = [0x77u8; SALT_LEN];
+
+        let salt_only = v1_sector(salt, None);
+        assert_eq!(
+            parse(&salt_only),
+            PreambleStatus::Valid(DeviceSecrets {
+                salt,
+                boot_verifier: None,
+                kdf: V1_KDF,
+            }),
+            "a genuine v1 salt-only header (version 1, slot count 1) must parse and resolve V1_KDF"
+        );
+
+        let verifier = sample_verifier();
+        let with_verifier = v1_sector(salt, Some(verifier));
+        assert_eq!(
+            parse(&with_verifier),
+            PreambleStatus::Valid(DeviceSecrets {
+                salt,
+                boot_verifier: Some(verifier),
+                kdf: V1_KDF,
+            }),
+            "a genuine fully-provisioned v1 header (version 1, slot count 2) must parse, verifier and all, and resolve V1_KDF"
+        );
+    }
+
     #[test]
     fn stored_verifier_reads_back_with_the_salt_unchanged() {
         let mut dev = MemBlockDevice::new(1).expect("device");
         let first = load_or_provision(&mut dev, stream(0xA0)).expect("provision");
         let verifier = sample_verifier();
-        let stored = store_boot_verifier(&mut dev, &first.salt, &verifier).expect("store verifier");
+        let stored = store_boot_verifier(&mut dev, &first.salt, &verifier, MASTER_KDF)
+            .expect("store verifier");
         assert_eq!(stored.boot_verifier, Some(verifier));
         assert_eq!(stored.salt, first.salt, "store preserves the salt");
 
@@ -545,7 +777,7 @@ mod tests {
         assert_eq!(loaded.salt, first.salt, "salt stable across store+load");
         assert_eq!(loaded.boot_verifier, Some(verifier), "verifier persists");
 
-        // The on-disk header declares two slots.
+        // The on-disk header declares three slots: salt, KDF record, verifier.
         let mut sector = [0u8; SECTOR_SIZE];
         dev.read_sectors(0, 1, &mut sector).expect("read back");
         assert_eq!(
@@ -554,8 +786,8 @@ mod tests {
                     .try_into()
                     .unwrap_or_else(|_| unreachable!("4-byte slice"))
             ),
-            2,
-            "slot count 2 on disk"
+            3,
+            "slot count 3 on disk (salt + KDF + verifier)"
         );
     }
 
@@ -565,7 +797,7 @@ mod tests {
         // verifier must not parse — the zero guard, not the integrity tag,
         // is what rejects it here.
         let salt = [0x11u8; SALT_LEN];
-        let sector = render(&salt, Some(&[0u8; VERIFIER_LEN]));
+        let sector = render(&salt, Some(&[0u8; VERIFIER_LEN]), MASTER_KDF);
         assert_eq!(
             parse(&sector),
             PreambleStatus::Corrupt,
@@ -597,7 +829,7 @@ mod tests {
         let mut dev = MemBlockDevice::new(1).expect("device");
         let first = load_or_provision(&mut dev, stream(0xA0)).expect("provision");
         let verifier = sample_verifier();
-        store_boot_verifier(&mut dev, &first.salt, &verifier).expect("store");
+        store_boot_verifier(&mut dev, &first.salt, &verifier, MASTER_KDF).expect("store");
         let loaded = match load(&mut dev).expect("load") {
             PreambleStatus::Valid(secrets) => secrets,
             other => unreachable!("a stored preamble parses as Valid, got {other:?}"),
@@ -611,7 +843,7 @@ mod tests {
         let mut dev = MemBlockDevice::new(1).expect("device");
         let first = load_or_provision(&mut dev, stream(0xA0)).expect("provision");
         let verifier = sample_verifier();
-        store_boot_verifier(&mut dev, &first.salt, &verifier).expect("store");
+        store_boot_verifier(&mut dev, &first.salt, &verifier, MASTER_KDF).expect("store");
 
         let mut sector = [0u8; SECTOR_SIZE];
         dev.read_sectors(0, 1, &mut sector).expect("read");

@@ -96,6 +96,10 @@ pub enum SecurityError {
     CipherError,
     /// Buffer size does not match expected block size.
     InvalidBlockSize,
+    /// Deriving a key under a stored [`PinKdf`] failed -- an invalid recorded
+    /// parameter set, or Argon2id memory that could not be obtained (#914).
+    /// Never a cheaper derivation: the caller gets no key at all.
+    KeyDerivationFailed,
 }
 
 impl fmt::Display for SecurityError {
@@ -106,6 +110,7 @@ impl fmt::Display for SecurityError {
             Self::HkdfOutputTooLong => write!(f, "HKDF output length exceeds 255 * hash_len"),
             Self::CipherError => write!(f, "XTS cipher operation failed"),
             Self::InvalidBlockSize => write!(f, "buffer size does not match block size"),
+            Self::KeyDerivationFailed => write!(f, "key derivation failed"),
         }
     }
 }
@@ -598,6 +603,49 @@ fn argon2id_digest(
     .ok_or(PinVerifyError::Memory)?
 }
 
+/// Derive a 32-byte key from `secret` under `salt` using `kdf`.
+///
+/// The ONE place a [`PinKdf`] becomes bytes. Both consumers reach it: the
+/// secret verifiers here, and `KeyManager::derive_from_passphrase`, whose
+/// master key is the root of every partition key (#914). They must not drift
+/// -- two dispatches over the same enum would eventually disagree about what a
+/// stored record means, and the symptom is a device that cannot unlock itself.
+///
+/// # Errors
+///
+/// [`PinVerifyError::Memory`] when Argon2id's block matrix was unavailable --
+/// never a silently cheaper derivation. See [`with_pin_kdf_blocks`].
+pub(crate) fn derive_under(
+    kdf: PinKdf,
+    secret: &[u8],
+    salt: &[u8],
+) -> Result<[u8; KEY_SIZE], PinVerifyError> {
+    derive_under_using(kdf, secret, salt, pin_kdf_alloc, pin_kdf_free)
+}
+
+/// [`derive_under`] against an injected block-matrix allocator.
+fn derive_under_using(
+    kdf: PinKdf,
+    secret: &[u8],
+    salt: &[u8],
+    alloc_fn: KdfAlloc,
+    free_fn: KdfFree,
+) -> Result<[u8; KEY_SIZE], PinVerifyError> {
+    match kdf {
+        PinKdf::Pbkdf2Sha256 { iterations } => {
+            let mut out = [0u8; KEY_SIZE];
+            pbkdf2_sha256(secret, salt, iterations, &mut out)
+                .map_err(|_| PinVerifyError::Derivation)?;
+            Ok(out)
+        }
+        PinKdf::Argon2id {
+            m_cost_kib,
+            t_cost,
+            p_cost,
+        } => argon2id_digest(secret, salt, m_cost_kib, t_cost, p_cost, alloc_fn, free_fn),
+    }
+}
+
 /// A provisioned secret verifier: the salt, the parameters, and the digest
 /// they produced (#272).
 ///
@@ -737,21 +785,7 @@ impl PinVerifier {
         alloc_fn: KdfAlloc,
         free_fn: KdfFree,
     ) -> Result<bool, PinVerifyError> {
-        let mut derived = match self.kdf {
-            PinKdf::Pbkdf2Sha256 { iterations } => {
-                let mut out = [0u8; KEY_SIZE];
-                pbkdf2_sha256(secret, &self.salt, iterations, &mut out)
-                    .map_err(|_| PinVerifyError::Derivation)?;
-                out
-            }
-            PinKdf::Argon2id {
-                m_cost_kib,
-                t_cost,
-                p_cost,
-            } => argon2id_digest(
-                secret, &self.salt, m_cost_kib, t_cost, p_cost, alloc_fn, free_fn,
-            )?,
-        };
+        let mut derived = derive_under_using(self.kdf, secret, &self.salt, alloc_fn, free_fn)?;
         let matched = constant_time_eq(&derived, &self.digest);
         // The derived value is secret-equivalent material; do not leave it on
         // the stack for the next frame to inherit (#828/#836).
