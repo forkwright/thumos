@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1](https://github.com/forkwright/thumos/compare/v0.9.0...v0.9.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **ci:** correct kernel-window remediation ([#945](https://github.com/forkwright/thumos/issues/945)) ([4680d75](https://github.com/forkwright/thumos/commit/4680d75c373149671db25518f3b0492e4077f10c)), closes [#933](https://github.com/forkwright/thumos/issues/933)
+* **ci:** enforce inventory in required kernel gate ([#955](https://github.com/forkwright/thumos/issues/955)) ([b2c706b](https://github.com/forkwright/thumos/commit/b2c706b0dd6d63c895b4adc6aa4ecccaf9d9dfab))
+* **kernel:** contain syscall user-memory faults ([#952](https://github.com/forkwright/thumos/issues/952)) ([437edaf](https://github.com/forkwright/thumos/commit/437edafbd357475ab61ceeb4837f9efcf6bac0fc))
+* **watchdog:** bound failed shutdowns ([#946](https://github.com/forkwright/thumos/issues/946)) ([edd574d](https://github.com/forkwright/thumos/commit/edd574d43d8574c23501428d78f56c4c4527cd30))
+
 ## [0.9.0](https://github.com/forkwright/thumos/compare/v0.8.7...v0.9.0) (2026-08-21)
 
 
