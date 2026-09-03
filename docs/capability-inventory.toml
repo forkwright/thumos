@@ -15,7 +15,7 @@ id = "kernel-core"
 modules = ["kinit", "kinit_plan", "kardia", "exceptions", "irq", "gic", "mmu", "slab", "page", "heap", "process", "fd", "signal", "elf", "futex", "ipc", "pipe", "socket", "supervisor", "syscall", "reflex", "mmio", "memguard", "board"]
 tier = "emulated-mock-proven"
 witness = ["THUMOS-QEMU: boot-complete", "THUMOS-QEMU: service-loop ticks=", "/init spawned", "shell: hello from userspace", "USERFAULT:"]
-notes = "Selected PL0 image, fault, graceful-kill, fork/exec/brk, and guard-page behavior is witnessed in the per-probe scripts (kfault/sleep/fork/exec/forkexec/guard/brk/crashloop). This is not complete process isolation: #871 owns caller-VAS and direction-specific permission validation for syscall copyin/copyout, and #868 owns sys_pipe's currently unchecked output write."
+notes = "Selected PL0 image, fault, graceful-kill, fork/exec/brk, and guard-page behavior is witnessed in the per-probe scripts (kfault/uaccess/sleep/fork/exec/forkexec/guard/brk/crashloop). #890/#952 landed centralized direction-aware, fault-contained copyin/copyout across the syscall pointer families and #868's no-side-effect pipe boundary; the QEMU uaccess witness covers caller-VAS permissions, mapping transitions, cross-process/fork/exec isolation, and raw LDRBT/STRBT fixups. Truthful residuals: recvfrom address/payload copyout is not byte-atomic after a late payload fault, /dev/urandom may advance volatile PRNG state before a failed copyout, the four-register ABI does not surface sendto/recvfrom address arguments, and addr_len plus execve envp remain unimplemented or ignored."
 
 [[capability]]
 id = "memory-fs"
@@ -28,7 +28,7 @@ id = "time"
 modules = ["timer", "time", "clock"]
 tier = "emulated-mock-proven"
 witness = ["kardia: clock src=manual"]
-notes = "The service loop drives ClockManager from the timer IRQ, and the QEMU witness seeds a manual epoch. GPS, NTP, and modem time acquisition are not exercised in emulation."
+notes = "The service loop drives ClockManager from the timer IRQ, and the QEMU witness seeds a manual epoch. GPS, NTP, and modem time acquisition are not exercised in emulation; #937 owns their bounded automatic producers and policy integration before live activation under #129/#398/#864."
 
 [[capability]]
 id = "telephony"
@@ -93,10 +93,10 @@ notes = "PowerManager policy state is boot/service-loop reachable, but radio sta
 
 [[capability]]
 id = "watchdog"
-modules = ["watchdog", "liveness"]
+modules = ["watchdog", "watchdog_qemu", "liveness", "shutdown"]
 tier = "kernel-wired"
-notes = "The MT6739 watchdog path is boot-reachable and the timer IRQ pets it only while every liveness owner is still advancing (#875) -- the scheduler round and the PID-0 service loop, each with its own stall deadline well inside the 5-second hardware period. Withholding is how the reset happens; the gate never disables the watchdog. No live-hardware receipt asserts the physical reset."
-hardware_reason = "After #875 lands, an operator-owned physical reset/deadline receipt is still required."
+notes = "The MT6739 watchdog path is boot-reachable and the timer IRQ pets it only while every liveness owner is still advancing (#875) -- the scheduler round and the PID-0 service loop, each with its own stall deadline well inside the 5-second hardware period. Controlled reboot crosses one coordinator that enters an immutable bounded grace before requesting reset. QEMU models the countdown and fault-injects both a frozen owner and a reset backend that returns; the latter observes the final grace pet, rejects late grace renewal, and expires after withholding."
+hardware_reason = "The QEMU model proves software wiring only; an operator-owned AGM M7 session must still witness the physical reset cause and deadline."
 
 [[capability]]
 id = "battery-monitor"
@@ -122,7 +122,7 @@ id = "dns-tls"
 modules = ["dns_tls"]
 tier = "compiled-only"
 notes = "DotClient framing, pinning, and transport logic are host-tested, but every construction site is test-only and no production resolver/network path drives it."
-tracking_reason = "Software service-loop/resolver integration is tracked by #753 before live transport qualification."
+tracking_reason = "Production resolver/service-loop integration is tracked by #935; #864 owns required socket primitives and #129 owns live radio activation."
 
 [[capability]]
 id = "radio-drivers"
@@ -134,8 +134,8 @@ notes = "kinit constructs and readiness-checks the non-test WiFi, Bluetooth, and
 id = "comms-matrix"
 modules = ["matrix_crypto", "http_client", "json_mini", "harmostes", "matrix_ids"]
 tier = "compiled-only"
-notes = "HTTP/JSON plus this kernel's simplified, non-interoperable Olm/Megolm surfaces are compiled and host-tested. The inbound to-device pre-key path consumes a local one-time key and establishes an OlmSession, but MatrixClient is never constructed from kernel_main, so no production boot/service-loop path reaches it. Per-message Olm ratchet advancement remains absent (#844), and the pre-key handshake produces only a session identifier derived from values the homeserver holds -- it is not a key agreement and encrypts nothing (#902)."
-tracking_reason = "Unified-inbox and MatrixClient integration is software work tracked by #753."
+notes = "HTTP/JSON plus this kernel's simplified, non-interoperable Olm/Megolm surfaces are compiled and host-tested. The inbound to-device pre-key path consumes a local one-time key and establishes an OlmSession, but MatrixClient is never constructed from kernel_main, so no production boot/service-loop path reaches it. The pre-key handshake produces only a session identifier derived from values the homeserver holds -- it is not a key agreement and encrypts nothing (#902). #932 owns a real persistent device identity; both remain dependencies of any live client after #889 selects the protocol target."
+tracking_reason = "Construction and bounded polling of the selected Phase-09 client is tracked by #938, with cryptographic agreement still dependent on #932/#902."
 
 [[capability]]
 id = "screens-extended"
@@ -147,8 +147,8 @@ notes = "screen_calendar renders via the heorte witness; screen_fm is fed by fm-
 id = "screens-compiled-only"
 modules = ["screen_alarm", "screen_call", "screen_contacts", "screen_nous"]
 tier = "compiled-only"
-notes = "No route/input path reaches them today -- selecting their ScreenId renders the screen_unimplemented placeholder instead (#730). screen_alarm was previously (incorrectly) listed under screens-extended as 'routed but unwitnessed'; no route to it exists in kardia.rs at all, which is the drift #730 found and this entry corrects. alarm/nous/call/contacts screens wait on their owning subsystems reaching the service loop (#753)."
-tracking_reason = "Implemented and unit-tested, not hardware-gated; service-loop route/input integration is tracked by #753."
+notes = "No route/input path reaches them today -- selecting their ScreenId renders the screen_unimplemented placeholder instead (#730). screen_alarm was previously (incorrectly) listed under screens-extended as 'routed but unwitnessed'; no route to it exists in kardia.rs at all, which is the drift #730 found and this entry corrects. #936 owns route/input integration one subsystem at a time: alarm composes the existing Heorte owner, call depends on #398/#858, contacts on #939, and Nous on #941."
+tracking_reason = "Implemented and unit-tested, not hardware-gated; subsystem-backed service-loop routing is tracked by #936 and its named child owners."
 
 [[capability]]
 id = "fm-radio"
@@ -165,11 +165,32 @@ witness = ["kardia: threat detector_before=false", "kardia: threat detector_befo
 notes = "ThreatMonitor is reached and the boot smoke feeds the SMS surveillance classification path, but the composite score is a log-derived UNCAL heuristic, not sema's detector engine; only sema-core types are linked and the other detector producers remain absent. With no detector report, #743 suppresses the score and renders NO DETECTOR. The modem status input is CCCI boot-path availability, not rail state; #874 owns that requested/applied/observed distinction and forbids automatic radio-cut action from an uncalibrated score."
 
 [[capability]]
-id = "apps-compiled-only"
-modules = ["contacts", "t9", "briar", "meshtastic", "ekphrasis", "provision", "nous"]
+id = "contacts-input-compiled-only"
+modules = ["contacts", "t9"]
 tier = "compiled-only"
-notes = "No production call path from boot/service loop. Provisioning additionally embeds a public RFC 8032 test trust anchor; #869 owns production key injection, test-key rejection, identity/freshness/replay semantics, and custody before reachability. Briar and Meshtastic remain Phase-09 surfaces."
-tracking_reason = "Software reachability is tracked by #753; provisioning trust is separately blocked by #869."
+notes = "No production call path from boot/service loop. #939 owns the persistent contacts plus typed keypad/T9 product vertical before UI or hardware qualification."
+tracking_reason = "Contacts/T9 product reachability is tracked by #939."
+
+[[capability]]
+id = "comms-transports-compiled-only"
+modules = ["briar", "meshtastic"]
+tier = "compiled-only"
+notes = "Both modules are compiled transport stubs with no production owner; #940 owns the product decision and any retained interoperable runtime."
+tracking_reason = "Implement-or-delete decisions and retained transport reachability are tracked by #940."
+
+[[capability]]
+id = "aletheia-apps-compiled-only"
+modules = ["ekphrasis", "nous"]
+tier = "compiled-only"
+notes = "No production call path composes their audio, network, identity, confirmation, or proposal surfaces."
+tracking_reason = "The authenticated Nous/Ekphrasis voice and proposal vertical is tracked by #941."
+
+[[capability]]
+id = "provisioning-compiled-only"
+modules = ["provision"]
+tier = "compiled-only"
+notes = "No production call path from boot/service loop. The parser additionally embeds a public RFC 8032 test trust anchor; #869 owns production authority, test-key rejection, identity/freshness/replay semantics, and custody, while #942 owns bounded runtime onboarding and hands accepted state to the client selected under #938."
+tracking_reason = "Provisioning authority is tracked by #869 and runtime reachability by #942; accepted state feeds the selected client under #938."
 
 [[capability]]
 id = "hardware-support"

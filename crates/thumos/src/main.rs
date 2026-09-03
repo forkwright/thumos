@@ -79,12 +79,52 @@ compile_error!(
     "qemu and production are mutually exclusive: the QEMU bring-up harness remaps MT6739 peripheral addresses and must never ship."
 );
 
+// WHY (#875): watchdog probes deliberately change reboot/liveness behavior
+// and depend on the observable QEMU backend. Compiling either for M7 would
+// inject a fault into a hardware image instead of producing a witness.
+#[cfg(all(
+    any(
+        feature = "watchdog-stall-probe",
+        feature = "watchdog-reboot-probe",
+        feature = "watchdog-shutdown-hang-probe"
+    ),
+    not(feature = "qemu")
+))]
+compile_error!("watchdog probes require --features qemu and must never enter an M7 image.");
+
+// WHY (#875): each probe owns one expected terminal outcome. Combining any
+// pair would make fault injections race and turn the witness into an ordering
+// accident instead of an attributable result.
+#[cfg(any(
+    all(feature = "watchdog-stall-probe", feature = "watchdog-reboot-probe"),
+    all(
+        feature = "watchdog-stall-probe",
+        feature = "watchdog-shutdown-hang-probe"
+    ),
+    all(
+        feature = "watchdog-reboot-probe",
+        feature = "watchdog-shutdown-hang-probe"
+    )
+))]
+compile_error!("watchdog fault-injection features are mutually exclusive.");
+
 // WHY (#487 fault-handling): the kfault-probe injects a deliberate kernel fault
 // for CI; a production image must never contain one.
 #[cfg(all(feature = "kfault-probe", feature = "production"))]
 compile_error!(
     "kfault-probe is a CI fault-injection harness; a production image must not contain a deliberate kernel fault."
 );
+
+// WHY (#871): the uaccess probe deliberately bypasses the full-range preflight
+// and faults both unprivileged copy instructions. It exists only to falsify the
+// data-abort fixup under QEMU and must never enter a shippable image.
+#[cfg(all(feature = "uaccess-probe", feature = "production"))]
+compile_error!(
+    "uaccess-probe is a CI fault-injection harness and must not ship in a production image."
+);
+
+#[cfg(all(feature = "uaccess-probe", not(feature = "qemu")))]
+compile_error!("uaccess-probe is meaningful only with the QEMU target witness (--features qemu).");
 
 // WHY (#492 fault supervision): crashloop-probe makes kinit spawn + supervise a
 // program that faults on every launch, purely so CI can witness the restart
@@ -236,7 +276,7 @@ mod process;
 mod provision;
 // WHY(qemu): semihosting exit codes + early host-console writes for the
 // QEMU runner (see scripts/qemu-runner.sh).
-#[cfg(all(not(test), feature = "qemu"))]
+#[cfg(feature = "qemu")]
 mod qemu;
 mod ramfs;
 mod reflex;
@@ -260,6 +300,7 @@ mod secrets;
 mod secure_boot;
 mod security;
 mod security_mode;
+mod shutdown;
 mod signal;
 mod sim;
 mod slab;
@@ -317,11 +358,17 @@ mod vfs;
 // new gets pulled into the host build by un-gating the module itself.
 #[cfg(not(feature = "qemu"))]
 mod watchdog;
-// WHY(qemu): virt models no MT6739 WDT; a no-op stub keeps the timer-IRQ
-// pet path and kinit call sites identical without touching MMIO.
+// WHY(qemu): virt models no MT6739 WDT MMIO block. The board-specific module
+// keeps call sites identical while modeling an observable tick countdown, so
+// a refused pet has a falsifying reset outcome under the witness (#875).
 #[cfg(feature = "qemu")]
 #[path = "watchdog_qemu.rs"]
 mod watchdog;
+// Compile the board-neutral QEMU countdown model into the canonical host test
+// binary under its own name. Runtime hooks in the file remain qemu-gated; this
+// declaration makes its pure model tests genuinely visible to the test ledger.
+#[cfg(all(test, not(feature = "qemu")))]
+mod watchdog_qemu;
 mod wifi;
 
 #[cfg(not(test))]

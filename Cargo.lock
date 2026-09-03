@@ -26,16 +26,16 @@ dependencies = [
 
 [[package]]
 name = "aes-gcm"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdf011db2e21ce0d575593d749db5554b47fed37aff429e4dc50bc91ac93a028"
+checksum = "7f2b8006a0c83f52b62ba44a97b58bf76fe2f70a329e588f67f89691d93d498f"
 dependencies = [
  "aead",
  "aes",
  "cipher",
  "ctr",
+ "ctutils",
  "ghash",
- "subtle",
  "zeroize",
 ]
 
@@ -50,7 +50,7 @@ dependencies = [
 
 [[package]]
 name = "aither"
-version = "0.8.7"
+version = "0.9.1"
 dependencies = [
  "aither-core",
  "getrandom 0.4.3",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "aither-core"
-version = "0.8.7"
+version = "0.9.1"
 dependencies = [
  "hmac",
  "pbkdf2",
@@ -92,7 +92,7 @@ checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
 name = "asphaleia"
-version = "0.8.7"
+version = "0.9.1"
 dependencies = [
  "asphaleia-core",
  "log",
@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "asphaleia-core"
-version = "0.8.7"
+version = "0.9.1"
 
 [[package]]
 name = "atomic-polyfill"
@@ -567,7 +567,7 @@ dependencies = [
 
 [[package]]
 name = "eidolon"
-version = "0.8.7"
+version = "0.9.1"
 dependencies = [
  "eidolon-core",
  "embedded-graphics",
@@ -577,7 +577,7 @@ dependencies = [
 
 [[package]]
 name = "eidolon-core"
-version = "0.8.7"
+version = "0.9.1"
 
 [[package]]
 name = "either"
@@ -781,7 +781,7 @@ dependencies = [
 
 [[package]]
 name = "haphe"
-version = "0.8.7"
+version = "0.9.1"
 
 [[package]]
 name = "hash32"
@@ -868,7 +868,7 @@ dependencies = [
 
 [[package]]
 name = "hypographe"
-version = "0.8.7"
+version = "0.9.1"
 dependencies = [
  "ed25519-dalek",
  "sha2",
@@ -975,7 +975,7 @@ dependencies = [
 
 [[package]]
 name = "kelyphos"
-version = "0.8.7"
+version = "0.9.1"
 dependencies = [
  "log",
  "snafu",
@@ -983,7 +983,7 @@ dependencies = [
 
 [[package]]
 name = "klesis"
-version = "0.8.7"
+version = "0.9.1"
 dependencies = [
  "klesis-core",
  "log",
@@ -994,14 +994,14 @@ dependencies = [
 
 [[package]]
 name = "klesis-core"
-version = "0.8.7"
+version = "0.9.1"
 dependencies = [
  "criterion",
 ]
 
 [[package]]
 name = "krypta"
-version = "0.8.7"
+version = "0.9.1"
 dependencies = [
  "aes-gcm",
  "ed25519-dalek",
@@ -1020,7 +1020,7 @@ dependencies = [
 
 [[package]]
 name = "leipsanon"
-version = "0.8.7"
+version = "0.9.1"
 dependencies = [
  "getrandom 0.4.3",
  "log",
@@ -1052,9 +1052,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.33"
+version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "managed"
@@ -1070,7 +1070,7 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "metaxu"
-version = "0.8.7"
+version = "0.9.1"
 dependencies = [
  "compact_str",
  "ed25519-dalek",
@@ -1085,7 +1085,7 @@ dependencies = [
 
 [[package]]
 name = "metaxu-core"
-version = "0.8.7"
+version = "0.9.1"
 dependencies = [
  "compact_str",
  "ed25519-dalek",
@@ -1301,7 +1301,7 @@ dependencies = [
 
 [[package]]
 name = "pteron"
-version = "0.8.7"
+version = "0.9.1"
 dependencies = [
  "aes",
  "cmac",
@@ -1505,7 +1505,7 @@ dependencies = [
 
 [[package]]
 name = "sema"
-version = "0.8.7"
+version = "0.9.1"
 dependencies = [
  "jiff",
  "log",
@@ -1518,7 +1518,7 @@ dependencies = [
 
 [[package]]
 name = "sema-core"
-version = "0.8.7"
+version = "0.9.1"
 dependencies = [
  "serde",
 ]
@@ -1636,9 +1636,9 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "smoltcp"
-version = "0.13.1"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f73d40463bba65efc9adc6370b56df76d563cc46e2482bba58351b4afb7535e"
+checksum = "b6f8b28ad56c6e35524a37dd492af5d1a47e31e1a4d175cd12f89c075f01980f"
 dependencies = [
  "bitflags 1.3.2",
  "byteorder",
@@ -1691,7 +1691,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stegnos"
-version = "0.8.7"
+version = "0.9.1"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1742,7 +1742,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys",
@@ -1819,7 +1819,7 @@ checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "topos"
-version = "0.8.7"
+version = "0.9.1"
 dependencies = [
  "jiff",
  "log",
@@ -1831,7 +1831,7 @@ dependencies = [
 
 [[package]]
 name = "topos-core"
-version = "0.8.7"
+version = "0.9.1"
 
 [[package]]
 name = "typenum"

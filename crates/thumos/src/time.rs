@@ -28,7 +28,7 @@
 //! This matches the 32-bit ABI layout used by musl on `ARMv7`.
 
 use crate::exceptions;
-use crate::memguard::{Access, validate_user_range};
+use crate::memguard::{copy_from_user, copy_to_user};
 use crate::process;
 use crate::syscall::EFAULT;
 use crate::timer;
@@ -184,9 +184,6 @@ pub(crate) fn sys_clock_gettime(clock_id: u32, ts_ptr: u32) -> u32 {
     // Write: the kernel stores the time INTO this buffer, so a read-only user
     // mapping is a legitimate source but not a legitimate destination.
     let ptr = ts_ptr as usize;
-    if !validate_user_range(ptr, 8, Access::Write) {
-        return EFAULT;
-    }
 
     let count = timer::counter();
     let freq = u64::from(timer::frequency());
@@ -209,15 +206,12 @@ pub(crate) fn sys_clock_gettime(clock_id: u32, ts_ptr: u32) -> u32 {
         _ => return EINVAL,
     };
 
-    // Write the two u32 fields to user space.
-    // SAFETY: [ptr, ptr+8) was validated above against the caller's own page
-    // tables with PL0 write permission, so every byte is mapped and writable
-    // by this process. The pointer alignment is NOT guaranteed by the ABI
-    // (POSIX allows any alignment for char-typed buffers), so we use
-    // write_unaligned to be safe.
-    unsafe {
-        core::ptr::write_unaligned(ptr as *mut u32, secs);
-        core::ptr::write_unaligned((ptr + 4) as *mut u32, nanos);
+    let mut encoded = [0u8; 2 * core::mem::size_of::<u32>()];
+    let (secs_out, nanos_out) = encoded.split_at_mut(core::mem::size_of::<u32>());
+    secs_out.copy_from_slice(&secs.to_ne_bytes());
+    nanos_out.copy_from_slice(&nanos.to_ne_bytes());
+    if copy_to_user(ptr, &encoded).is_err() {
+        return EFAULT;
     }
     0
 }
@@ -244,20 +238,13 @@ pub(crate) fn sys_nanosleep(ts_ptr: u32) -> u32 {
 
     // Read: the requested duration is read OUT of this buffer.
     let ptr = ts_ptr as usize;
-    if !validate_user_range(ptr, 8, Access::Read) {
+    let mut encoded = [0u8; 2 * core::mem::size_of::<u32>()];
+    if copy_from_user(ptr, &mut encoded).is_err() {
         return EFAULT;
     }
-
-    // Read duration from user space.
-    // SAFETY: [ptr, ptr+8) was validated above against the caller's own page
-    // tables with PL0 read permission, so every byte is mapped and readable
-    // by this process. The unaligned-write
-    // reasoning applies in reverse for read_unaligned.
-    let (req_secs, req_nanos): (u32, u32) = unsafe {
-        let s = core::ptr::read_unaligned(ptr as *const u32);
-        let n = core::ptr::read_unaligned((ptr + 4) as *const u32);
-        (s, n)
-    };
+    let [s0, s1, s2, s3, n0, n1, n2, n3] = encoded;
+    let req_secs = u32::from_ne_bytes([s0, s1, s2, s3]);
+    let req_nanos = u32::from_ne_bytes([n0, n1, n2, n3]);
 
     // POSIX: tv_nsec must be in [0, 999_999_999]; anything else is EINVAL,
     // not silently folded into extra whole seconds of sleep.

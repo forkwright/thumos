@@ -37,19 +37,18 @@ Release authority is declared in `basanos/standards/RELEASES.md`: the operator c
 
 release-please builds the changelog and computes the version bump entirely from squashed commit messages, i.e. PR titles. A required check (`.github/workflows/pr-title.yml`) validates every PR title against `CLAUDE.md`'s grammar before merge, so a non-conforming title can no longer land silently. `0.1.18`'s release notes predate that check and are known-incomplete: 11 of the 20 commits since `v0.1.17` used a bare scope in the type position and were dropped from both the changelog and the version-bump computation (#665).
 
-One mechanical step is specific to this repo's GitHub mirror and is expected on every cut. A release-please PR is authored by `GITHUB_TOKEN`, and GitHub does not run `on: pull_request` workflows for events its own token triggered — the recursion guard that stops a workflow from endlessly retriggering itself. The branch-protection required checks therefore never execute, and the PR sits with `mergeStateStatus: BLOCKED` reporting no checks at all rather than failing ones.
+Release-please PRs are authored by `GITHUB_TOKEN`, so their `on: pull_request` workflow runs initially arrive held by GitHub's recursion guard. `.github/workflows/release-pr-checks.yml` handles that condition automatically: after Release Please completes, its `workflow_run` trigger calls the fleet healer, which approves the held runs. An hourly schedule is the backstop. The observable healthy state is a non-empty check rollup on the release PR with the required checks progressing; manual reruns are not part of a normal cut.
 
-Re-trigger them as a real-user actor, which is not subject to the guard:
+If the rollup remains empty after the Release PR checks workflow should have run, inspect that workflow before intervening:
 
 ```bash
-gh run list --repo forkwright/thumos --branch release-please--branches--main \
-  --json databaseId,name,conclusion --jq '.[] | select(.conclusion=="action_required")'
-gh run rerun <id> --repo forkwright/thumos   # once per suppressed run
+gh run list --repo forkwright/thumos --workflow "Release PR checks" --limit 5
+gh run view <run-id> --repo forkwright/thumos --log-failed
 ```
 
-Then merge on green, as with any PR. The required contexts are `cargo audit`, `cargo deny`, `gate / gate`, `conventional-commit grammar`, and `kernel (i686 tests + armv7a build)` — read them from branch protection rather than trusting this list. `Dependabot Auto-Merge` stays `action_required` and is *not* required, so `UNSTABLE` with those five green is the expected terminal state for a release PR.
+Confirm that the run corresponds to the latest Release Please completion and that its `heal / a release PR has its required checks` job succeeded. An empty rollup after that point is a healer fault to diagnose, not a prompt to restore the superseded per-run rerun ritual. Then merge on green, as with any PR; read the required contexts from branch protection rather than trusting a copied list. `Dependabot Auto-Merge` is not a required context.
 
-The merge is not the release: release-please's `push`-to-`main` trigger creates the tag and GitHub release afterwards, and that run is not suppressed because a real user performed the merge. Confirm the tag exists before calling a release done.
+The merge is not the release: release-please's `push`-to-`main` trigger creates the tag and GitHub release afterwards, and that run is not suppressed because a real user performed the merge. Before calling the release done, confirm that the tag exists and that the same run's `release-attest` job succeeded; that job verifies the release carries the source tarball and both CycloneDX SBOMs. Download the tarball and independently verify its signed provenance with `gh attestation verify thumos-vX.Y.Z.tar.gz --repo forkwright/thumos`.
 
 ### `extra-files` jsonpath limitation: no `@.name` equality filters against TOML
 

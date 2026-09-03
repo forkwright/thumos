@@ -30,23 +30,58 @@ set -euo pipefail
 #
 # Usage: check-kernel-window.sh          # drift check, plus headroom if built
 #        MIN_HEADROOM=131072 check-...   # raise the floor
+#        check-kernel-window.sh --self-test
+
+MODE="${1:-}"
+if [[ -n "$MODE" && "$MODE" != "--self-test" ]]; then
+    echo "usage: $0 [--self-test]" >&2
+    exit 2
+fi
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 BOARD="$REPO_ROOT/crates/thumos/src/board/mod.rs"
 LINK_LD="$REPO_ROOT/crates/thumos/link.ld"
 ELF="$REPO_ROOT/crates/thumos/target/armv7a-none-eabi/release/thumos"
 
-python3 - "$BOARD" "$LINK_LD" "$ELF" "${MIN_HEADROOM:-65536}" <<'PYEOF'
+python3 - "$BOARD" "$LINK_LD" "$ELF" "${MIN_HEADROOM:-65536}" "$MODE" <<'PYEOF'
 import re, subprocess, sys, os
 
-board_path, link_path, elf_path, min_headroom = sys.argv[1:5]
-min_headroom = int(min_headroom)
+board_path, link_path, elf_path, min_headroom_arg, mode = sys.argv[1:6]
 
 rc = 0
 def fail(msg):
     global rc
     print(f"KERNEL WINDOW DRIFT: {msg}", file=sys.stderr)
     rc = 1
+
+LOW_HEADROOM_REMEDIATION = (
+    "Raise board::KERNEL_RESERVED, the sole window-size knob, by whole megabytes; "
+    "build.rs then regenerates __kernel_end and mmu::KERNEL_SECTIONS derives the "
+    "table count. Or reclaim space -- nm --size-sort names the largest symbols"
+)
+if "link.ld" in LOW_HEADROOM_REMEDIATION:
+    fail("low-headroom remediation names link.ld as an independent window owner")
+
+link_src = open(link_path).read()
+assert_match = re.search(
+    r'ASSERT\s*\(\s*__svc_stack_top\s*<=\s*__kernel_end\s*,\s*"([^"]+)"\s*\)',
+    link_src,
+)
+if not assert_match:
+    fail("link.ld has no operational kernel-window ASSERT diagnostic to validate")
+else:
+    assert_diagnostic = assert_match.group(1)
+    if "board::KERNEL_RESERVED" not in assert_diagnostic or "sole window-size knob" not in assert_diagnostic:
+        fail("link.ld's kernel-window diagnostic does not name board::KERNEL_RESERVED as the sole knob")
+    if "__kernel_end" in assert_diagnostic:
+        fail("link.ld's kernel-window diagnostic presents generated __kernel_end as operator-controlled remediation")
+
+if mode == "--self-test":
+    if rc == 0:
+        print("kernel window: remediation ownership self-test passed (#933)")
+    sys.exit(rc)
+
+min_headroom = int(min_headroom_arg)
 
 board = open(board_path).read()
 
@@ -66,7 +101,6 @@ if None in (ram_start, kernel_load, kernel_reserved):
 kernel_end = kernel_load + kernel_reserved
 SECTION = 1 << 20
 
-link_src = open(link_path).read()
 if re.search(r'^\s*__kernel_end\s*=', link_src, re.M):
     fail(
         "link.ld assigns __kernel_end itself. build.rs derives that symbol from "
@@ -124,9 +158,7 @@ if headroom < 0:
 elif headroom < min_headroom:
     fail(
         f"only {headroom} bytes of window left, below the {min_headroom}-byte floor. "
-        f"Raise board::KERNEL_RESERVED and link.ld's __kernel_end together by whole "
-        f"megabytes (mmu::KERNEL_SECTIONS derives the table count), or reclaim space -- "
-        f"nm --size-sort names the largest symbols"
+        f"{LOW_HEADROOM_REMEDIATION}"
     )
 
 sys.exit(rc)

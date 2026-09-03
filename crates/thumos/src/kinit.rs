@@ -5,7 +5,7 @@
 //! Hubris model: each driver init is fault-isolated, logged, and skippable.
 //!
 //! Boot ORDER:
-//! MMU → page alloc → heap → GIC → process → exceptions/timer → CSPRNG → devices →
+//! MMU → page alloc → heap → GIC → process → watchdog → exceptions/timer → CSPRNG → devices →
 //! eMMC → display → GPIO keypad → secure boot → passphrase → encrypted fs →
 //! audit log → security mode → USB serial → CCCI modem → power → userspace.
 //!
@@ -651,7 +651,29 @@ pub unsafe fn run() -> ! {
     }
 
     // -----------------------------------------------------------------------
-    // Step 5: Exception handlers + timer
+    // Step 5: Hardware watchdog (WDT)
+    // -----------------------------------------------------------------------
+    serial.log("[init] Watchdog (WDT, 5s)\r\n");
+    // SAFETY: called once after MMU init (device MMIO is identity-mapped) and
+    // before exceptions::init enables timer delivery. That ordering satisfies
+    // both the MT6739 driver and QEMU model's single-owner init contract: the
+    // timer IRQ cannot observe or pet a partially initialized backend.
+    {
+        let _irq_guard = crate::irq::IrqGuard::new();
+        unsafe {
+            watchdog::init();
+        }
+    }
+    #[cfg(not(feature = "qemu"))]
+    serial.log(" WDT armed (5s timeout)\r\n");
+    // WHY(qemu): virt has no MT6739 WDT MMIO block. watchdog_qemu.rs models
+    // the same tick countdown and emits a distinct semihosting expiry status,
+    // so this is evidence of the software seam, never a hardware claim.
+    #[cfg(feature = "qemu")]
+    serial.log(" WDT modeled (qemu: observable 5s countdown)\r\n");
+
+    // -----------------------------------------------------------------------
+    // Step 5a: Exception handlers + timer
     // -----------------------------------------------------------------------
     serial.log("[init] Exceptions + timer\r\n");
     serial.log(" CPU DVFS/core parking unavailable (no source-grounded actuator, #879)\r\n");
@@ -723,24 +745,6 @@ pub unsafe fn run() -> ! {
         serial.log(" WARN CSPRNG timed out waiting for timer credits -- bytes unavailable\r\n");
         serial.log(" Radio identity randomization disabled\r\n");
     }
-
-    // -----------------------------------------------------------------------
-    // Step 5c: Hardware watchdog (WDT)
-    // -----------------------------------------------------------------------
-    serial.log("[init] Watchdog (WDT, 5s)\r\n");
-    // SAFETY: called once after MMU init (device MMIO is identity-mapped).
-    // Configures the MT6739 WDT with a 5-second timeout. The timer handler
-    // currently pets it every 10 ms before scheduler progress; #875 owns the
-    // required progress-coupled liveness gate.
-    unsafe {
-        watchdog::init();
-    }
-    #[cfg(not(feature = "qemu"))]
-    serial.log(" WDT armed (5s timeout)\r\n");
-    // WHY(qemu): watchdog is a no-op stub (watchdog_qemu.rs); say so rather
-    // than log a hardware claim that is not true under the emulator.
-    #[cfg(feature = "qemu")]
-    serial.log(" WDT skipped (qemu: no MT6739 WDT model)\r\n");
 
     // -----------------------------------------------------------------------
     // Step 6: Device registry
@@ -1794,17 +1798,20 @@ pub unsafe fn run() -> ! {
     // (scheduling is gated OFF throughout kinit -- see
     // process::scheduling_enabled -- because the boot context is not a
     // scheduled process and a mid-init switch would abandon it).
-    process::enable_scheduling();
-
     // Arm the watchdog's progress gate at the same moment, and not before:
     // until scheduling is on there is no scheduler round to observe, and a gate
     // demanding one would reset the device partway through every boot. From
     // here the pet is evidence-backed rather than automatic (#875).
     //
-    // SAFETY: single-core kernel context at the end of kinit; the timer IRQ is
-    // the only other toucher and this runs between ticks.
-    unsafe {
-        crate::liveness::arm(exceptions::ticks());
+    // SAFETY: IRQ masking makes scheduling enablement and gate arming one
+    // transition. The timer IRQ cannot schedule an owner or touch its
+    // otherwise IRQ-exclusive gate between the two operations.
+    {
+        let _irq_guard = crate::irq::IrqGuard::new();
+        process::enable_scheduling();
+        unsafe {
+            crate::liveness::arm(exceptions::ticks());
+        }
     }
 
     // -----------------------------------------------------------------------

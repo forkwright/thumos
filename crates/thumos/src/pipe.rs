@@ -28,6 +28,11 @@ pub(crate) const MAX_PIPES: usize = 8;
 /// Pipe buffer size: one 4 KB page.
 pub(crate) const PIPE_BUF_SIZE: usize = 4096;
 
+/// Maximum bytes copied across the uaccess boundary in one pipe syscall.
+/// Short reads/writes are part of the pipe ABI; a fixed chunk prevents the
+/// user-controlled count from becoming a kernel allocation request.
+const PIPE_COPY_CHUNK: usize = 1024;
+
 /// EAGAIN — operation would block (two's complement -11, Linux ARM convention).
 pub(crate) const EAGAIN: u32 = 0u32.wrapping_sub(11);
 
@@ -101,6 +106,24 @@ impl PipeBuffer {
         }
         self.count -= to_read;
         to_read
+    }
+
+    /// Copy queued bytes without consuming them.
+    pub(crate) fn peek(&self, dst: &mut [u8]) -> usize {
+        let to_read = dst.len().min(self.count);
+        let mut pos = self.read_pos;
+        for slot in &mut dst[..to_read] {
+            *slot = self.data[pos];
+            pos = (pos + 1) % PIPE_BUF_SIZE;
+        }
+        to_read
+    }
+
+    /// Commit a previously peeked prefix after user copyout succeeded.
+    fn consume(&mut self, len: usize) {
+        let consumed = len.min(self.count);
+        self.read_pos = (self.read_pos + consumed) % PIPE_BUF_SIZE;
+        self.count -= consumed;
     }
 
     /// Bytes currently available to read.
@@ -324,19 +347,19 @@ pub(crate) fn sys_pipe(fds_ptr: u32) -> u32 {
     };
     let (read_fd, write_fd) = (read_fd as u32, write_fd as u32);
 
-    // Write the two fd numbers to userspace.
-    // SAFETY: the whole eight-byte range was validated at entry against the
-    // caller's own page tables with PL0 write permission, so both stores land
-    // in memory this process maps and may write. The pointer alignment is NOT
-    // guaranteed by the ABI (POSIX allows any alignment for char-typed buffers
-    // -- the same reasoning time::sys_clock_gettime documents for its own
-    // userspace writes), so write_unaligned is required: a plain
-    // core::ptr::write on a misaligned fds_ptr is undefined behavior and can
-    // fault on ARM.
-    unsafe {
-        let fds = fds_ptr as *mut u32;
-        core::ptr::write_unaligned(fds, read_fd);
-        core::ptr::write_unaligned(fds.add(1), write_fd);
+    let mut encoded = [0u8; FDS_OUT_LEN];
+    let (read_out, write_out) = encoded.split_at_mut(core::mem::size_of::<u32>());
+    read_out.copy_from_slice(&read_fd.to_ne_bytes());
+    write_out.copy_from_slice(&write_fd.to_ne_bytes());
+    if crate::memguard::copy_to_user(fds_ptr as usize, &encoded).is_err() {
+        let _removed = crate::process::with_current_fds(|table| {
+            let read = table.take(read_fd as usize);
+            let write = table.take(write_fd as usize);
+            (read, write)
+        });
+        crate::fd::ofd_unref(read_ofd);
+        crate::fd::ofd_unref(write_ofd);
+        return EFAULT;
     }
 
     0
@@ -372,17 +395,27 @@ pub(crate) fn sys_pipe_read(pipe_idx: usize, buf_ptr: u32, count: u32) -> u32 {
     // be mapped by this process and PL0-writable. Placed after the EOF/EAGAIN
     // early returns so a bad pointer is only rejected once the read would
     // actually dereference it.
+    let transfer_len = count.min(buf.available()).min(PIPE_COPY_CHUNK);
     if !crate::memguard::validate_user_range(
         buf_ptr as usize,
-        count,
+        transfer_len,
         crate::memguard::Access::Write,
     ) {
         return EFAULT;
     }
-    // SAFETY: validated above against the caller's own page tables with PL0
-    // write permission, so all `count` bytes are mapped and writable.
-    let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count) };
-    buf.read(dst) as u32
+    let mut dst = [0u8; PIPE_COPY_CHUNK];
+    let Some(dst) = dst.get_mut(..transfer_len) else {
+        return EFAULT;
+    };
+    let read = buf.peek(dst);
+    let Some(bytes_read) = dst.get(..read) else {
+        return EFAULT;
+    };
+    if crate::memguard::copy_to_user(buf_ptr as usize, bytes_read).is_err() {
+        return EFAULT;
+    }
+    buf.consume(read);
+    read as u32
 }
 
 /// `SYS_write` on a pipe fd.
@@ -426,13 +459,23 @@ pub(crate) fn sys_pipe_write(pipe_idx: usize, buf_ptr: u32, count: u32, writer_p
     // Read: the payload is copied OUT of the caller's buffer, so every page
     // must be mapped by this process and PL0-readable. Placed after the
     // EPIPE/EAGAIN early returns.
-    if !crate::memguard::validate_user_range(buf_ptr as usize, count, crate::memguard::Access::Read)
-    {
+    let transfer_len = count
+        .min(PIPE_BUF_SIZE - buf.available())
+        .min(PIPE_COPY_CHUNK);
+    if !crate::memguard::validate_user_range(
+        buf_ptr as usize,
+        transfer_len,
+        crate::memguard::Access::Read,
+    ) {
         return EFAULT;
     }
-    // SAFETY: validated above against the caller's own page tables with PL0
-    // read permission, so all `count` bytes are mapped and readable.
-    let src = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, count) };
+    let mut src = [0u8; PIPE_COPY_CHUNK];
+    let Some(src) = src.get_mut(..transfer_len) else {
+        return EFAULT;
+    };
+    if crate::memguard::copy_from_user(buf_ptr as usize, src).is_err() {
+        return EFAULT;
+    }
     buf.write(src) as u32
 }
 
@@ -655,6 +698,31 @@ mod tests {
     }
 
     #[test]
+    fn pipe_transfer_fault_rolls_back_every_published_resource() {
+        static mut FDS: [u32; 2] = [u32::MAX; 2];
+
+        reset_pool();
+        unsafe {
+            crate::fd::reset_fd_state_for_test();
+        }
+        let fds = core::ptr::addr_of_mut!(FDS).cast::<u32>();
+        crate::memguard::fail_next_copy_to_user_for_test();
+        assert_eq!(sys_pipe(fds as u32), EFAULT);
+        assert_eq!(
+            occupied_slots(),
+            0,
+            "copyout failure must free the pipe slot"
+        );
+
+        // A second call must be able to reuse both fd/OFD slots, proving the
+        // rollback covered publication as well as the visible pipe pool.
+        assert_eq!(sys_pipe(fds as u32), 0);
+        assert_eq!(occupied_slots(), 1);
+        let written = unsafe { &*core::ptr::addr_of!(FDS) };
+        assert_ne!(written[0], written[1]);
+    }
+
+    #[test]
     fn pipe_rejects_the_fds_pointer_range_adversarially() {
         reset_pool();
         unsafe {
@@ -713,6 +781,30 @@ mod tests {
         let kernel_ptr = crate::board::KERNEL_LOAD as u32;
         let result = sys_pipe_read(pipe_idx, kernel_ptr, 4);
         assert_eq!(result, EFAULT, "kernel-range buf_ptr must return EFAULT");
+    }
+
+    #[test]
+    fn pipe_read_transfer_fault_preserves_queued_bytes() {
+        static mut OUT: [u8; 4] = [0u8; 4];
+
+        reset_pool();
+        let pipe_idx = alloc_pipe_slot(0).expect("alloc pipe");
+        unsafe {
+            let buf = get_pipe_mut(pipe_idx).expect("pipe buffer");
+            assert_eq!(buf.write(b"data"), 4);
+        }
+
+        // This failure fires after the mapping/permission walk, modelling the
+        // exact copyout-fixup path that prevalidation-only tests cannot reach.
+        crate::memguard::fail_next_copy_to_user_for_test();
+        let out = core::ptr::addr_of_mut!(OUT).cast::<u8>();
+        assert_eq!(sys_pipe_read(pipe_idx, out as u32, 4), EFAULT);
+        let queued = unsafe { get_pipe_mut(pipe_idx).expect("pipe buffer").available() };
+        assert_eq!(queued, 4, "a failed copyout must not consume pipe data");
+
+        assert_eq!(sys_pipe_read(pipe_idx, out as u32, 4), 4);
+        let bytes = unsafe { &*core::ptr::addr_of!(OUT) };
+        assert_eq!(bytes, b"data", "the preserved bytes must remain readable");
     }
 
     #[test]

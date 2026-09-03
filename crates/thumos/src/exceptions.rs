@@ -92,6 +92,19 @@ pub unsafe fn init() {
             gic::enable_irq(musb_irq);
         }
     }
+
+    // WHY(#871): this QEMU-only probe must run after VBAR is live so both
+    // faulting unprivileged-transfer instructions can return through the
+    // exact-PC fixup path. It deliberately bypasses prevalidation; the real
+    // userspace syscall matrix separately proves permission rejection at the
+    // public boundary.
+    #[cfg(all(feature = "uaccess-probe", target_arch = "arm"))]
+    if crate::memguard::qemu_fault_fixup_probe() {
+        Uart::new().log("THUMOS-QEMU: uaccess fault fixups recovered\r\n");
+    } else {
+        Uart::new().log("FAIL uaccess: a faulting transfer returned success\r\n");
+        crate::qemu::request_exit(1);
+    }
 }
 
 /// Get the current tick count.
@@ -166,16 +179,16 @@ core::arch::global_asm!(
     // as IRQ/SVC (#465). Build a process::Context on the banked ABT/UND stack,
     // pass it to the Rust handler, which either KILLS a PL0 faulter (frame
     // swapped to the successor via process::switch_to; this epilogue
-    // exception-returns into it) or HALTS on a PL1 fault (the handler diverges;
-    // this epilogue is never reached). Saved pc = the FAULTING instruction (ARM
+    // exception-returns into it), HALTS on an ordinary PL1 fault (the handler
+    // diverges), or returns to one of the two exact uaccess fixups. Saved pc =
+    // the FAULTING instruction (ARM
     // ARM B1.8.3 Table B1-7 link offsets: data abort lr-8, prefetch abort lr-4,
-    // undef lr-4 ARM / lr-2 Thumb); pc is diagnostic-only on both paths -- a
-    // fault frame is never resumed.
+    // undef lr-4 ARM / lr-2 Thumb). PC is diagnostic-only on kill/halt; the
+    // uaccess recovery path rewrites it to the exact assembly fixup.
     // INVARIANT: this epilogue's `ldm {r13,r14}^` user-bank restore is correct
-    // ONLY because it is reached solely on the kill path, where the frame holds
-    // a scheduled process's context (mode 0x10 or 0x1F -- both use the user
-    // bank). A PL1 fault (including one from SVC/IRQ/ABT/UND mode, whose banked
-    // sp/lr this frame does NOT capture) halts in Rust and never returns here.
+    // on the kill path, where the frame holds a scheduled process's context.
+    // Uaccess fixups also preserve SVC/IRQ banked sp/lr across ABT; the boot
+    // probe runs in System mode, which shares the user bank. Other PL1 faults halt.
     "data_abort_handler_asm:",
     "    sub     lr, lr, #8", // pc = faulting instruction (DA: lr = pc+8)
     "    sub     sp, sp, #68",
@@ -288,9 +301,20 @@ pub extern "C" fn irq_handler_rust(frame: *mut process::Context) {
     // rewrite the trap frame to enter the handler (the pending bit is
     // cleared at dispatch inside deliver()).
     if let Some((sig, handler)) = process::check_pending_signal() {
-        // SAFETY: frame is the current process's trap Context on the IRQ
-        // stack; its sp/pc/lr are the interrupted user state.
-        unsafe { crate::signal::deliver(&mut *frame, sig, handler) };
+        // SAFETY: frame is the current process's trap Context on the IRQ stack;
+        // its sp/pc/lr are the interrupted user state.
+        let frame_ref = unsafe { &mut *frame };
+        let interrupted_sp = frame_ref.sp;
+        if crate::signal::deliver(frame_ref, sig, handler).is_err() {
+            // A process may deliberately move SP to an unmapped/read-only
+            // page before a signal arrives. Treat that exactly like its own
+            // data abort; never let signal delivery turn it into a PL1 fault.
+            process::fault_exit_current(process::FaultKind::DataAbort {
+                fault_addr: crate::signal::signal_frame_address(interrupted_sp)
+                    .unwrap_or(interrupted_sp),
+                fault_status: 0,
+            });
+        }
     }
     process::trap_leave();
 }
@@ -388,16 +412,24 @@ fn irq_handler_body() {
         // (#875). Withholding is how the reset happens; nothing here disables
         // the watchdog.
         //
-        // SAFETY: decide() touches only the IRQ-exclusive gate, and
-        // watchdog::pet() writes WDT_RESTART MMIO -- both from the timer IRQ
-        // at 100 Hz, non-reentrant on this single core, after watchdog::init().
+        // SAFETY: observe_tick()/decide() touch only IRQ-exclusive watchdog
+        // state, and watchdog::pet() writes WDT_RESTART MMIO -- all from the
+        // timer IRQ at 100 Hz, non-reentrant on this single core, after
+        // watchdog::init(), which kinit completes before enabling this timer.
+        // QEMU's observe_tick models the autonomous hardware countdown and
+        // exits if a withheld pet reaches its deadline.
         unsafe {
+            watchdog::observe_tick(now);
             match crate::liveness::decide(now) {
                 crate::liveness::PetDecision::Pet => watchdog::pet(),
                 crate::liveness::PetDecision::Withhold {
                     owner,
                     stalled_ticks,
-                } => crate::liveness::report_withheld(owner, stalled_ticks),
+                } => {
+                    #[cfg(all(feature = "qemu", feature = "watchdog-shutdown-hang-probe"))]
+                    watchdog::probe_late_shutdown_reentry(now);
+                    crate::liveness::report_withheld(owner, stalled_ticks);
+                }
             }
         }
 
@@ -429,6 +461,21 @@ pub(crate) extern "C" fn data_abort_handler_rust(frame: *mut process::Context) {
     unsafe {
         core::arch::asm!("mrc p15, 0, {}, c6, c0, 0", out(reg) dfar); // DFAR
         core::arch::asm!("mrc p15, 0, {}, c5, c0, 0", out(reg) fault_status); // DFSR
+    }
+    // WHY: the two uaccess instructions deliberately perform a PL0-permission
+    // access from a privileged exception mode. A translation/permission race
+    // must become EFAULT, not a kernel halt. Exact-PC matching confines the
+    // recovery contract to those instructions; a fault in their surrounding
+    // kernel loads/stores or anywhere else still reaches handle_fault below.
+    // Do not call trap_enter on this path: it is a nested abort inside the live
+    // SVC/IRQ frame, and the outer frame must remain process::ACTIVE_FRAME.
+    // SAFETY: frame is the writable Context built by data_abort_handler_asm.
+    let fault_pc = unsafe { (*frame).pc };
+    if let Some(fixup_pc) = crate::memguard::fault_fixup_pc(fault_pc) {
+        unsafe {
+            (*frame).pc = fixup_pc;
+        }
+        return;
     }
     handle_fault(
         frame,
@@ -595,9 +642,12 @@ pub(crate) extern "C" fn svc_handler_rust(frame: *mut process::Context) {
     // registers). The trampoline entered with user sp = the signal frame and
     // r0 = the handled signum; the pending bit was cleared at dispatch.
     if f.r[7] == crate::signal::SIGRETURN_NUM {
-        // SAFETY: as above; the trampoline's user sp is the frame deliver()
-        // built.
-        unsafe { crate::signal::sigreturn_frame(&mut *frame) };
+        // The frame is attacker-controlled user memory. An invalid or
+        // concurrently revoked frame returns EFAULT without partially
+        // replacing the live trap context.
+        if crate::signal::sigreturn_frame(f).is_err() {
+            f.r[0] = crate::syscall::EFAULT;
+        }
         process::trap_leave();
         return;
     }

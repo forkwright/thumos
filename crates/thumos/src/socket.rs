@@ -23,6 +23,8 @@
 
 extern crate alloc;
 
+use alloc::vec::Vec;
+
 use smoltcp::iface::SocketHandle;
 use smoltcp::socket::{tcp, udp};
 use smoltcp::wire::{IpAddress, IpEndpoint, Ipv4Address};
@@ -68,6 +70,9 @@ pub(crate) const EADDRNOTAVAIL: u32 = 0u32.wrapping_sub(99);
 
 /// Resource temporarily unavailable (no datagram currently queued).
 pub(crate) const EAGAIN: u32 = 0u32.wrapping_sub(11);
+
+/// Out of memory while allocating a bounded transport bounce buffer.
+const ENOMEM: u32 = 0u32.wrapping_sub(12);
 
 /// Message too long (a received datagram exceeded the caller's buffer
 /// and was dropped rather than truncated-and-delivered).
@@ -190,6 +195,61 @@ impl SockaddrIn {
             sin_zero: [0u8; 8],
         }
     }
+}
+
+const SOCKADDR_IN_SIZE: usize = core::mem::size_of::<SockaddrIn>();
+
+fn copy_sockaddr_from_user(addr: usize) -> Result<SockaddrIn, u32> {
+    let mut encoded = [0u8; SOCKADDR_IN_SIZE];
+    crate::memguard::copy_from_user(addr, &mut encoded).map_err(|_| fd::EFAULT)?;
+    let [
+        f0,
+        f1,
+        p0,
+        p1,
+        a0,
+        a1,
+        a2,
+        a3,
+        z0,
+        z1,
+        z2,
+        z3,
+        z4,
+        z5,
+        z6,
+        z7,
+    ] = encoded;
+    Ok(SockaddrIn {
+        sin_family: u16::from_ne_bytes([f0, f1]),
+        sin_port: u16::from_ne_bytes([p0, p1]),
+        sin_addr: u32::from_ne_bytes([a0, a1, a2, a3]),
+        sin_zero: [z0, z1, z2, z3, z4, z5, z6, z7],
+    })
+}
+
+fn copy_sockaddr_to_user(addr: usize, sockaddr: SockaddrIn) -> Result<(), u32> {
+    let [f0, f1] = sockaddr.sin_family.to_ne_bytes();
+    let [p0, p1] = sockaddr.sin_port.to_ne_bytes();
+    let [a0, a1, a2, a3] = sockaddr.sin_addr.to_ne_bytes();
+    let [z0, z1, z2, z3, z4, z5, z6, z7] = sockaddr.sin_zero;
+    let encoded = [
+        f0, f1, p0, p1, a0, a1, a2, a3, z0, z1, z2, z3, z4, z5, z6, z7,
+    ];
+    crate::memguard::copy_to_user(addr, &encoded).map_err(|_| fd::EFAULT)
+}
+
+/// Allocate a bounce buffer no larger than the transport that will consume it.
+/// The explicit capacity argument is load-bearing: syscall `len` is untrusted
+/// and must never become an unbounded request against the kernel heap.
+fn allocate_transfer_buffer(len: usize, transport_capacity: usize) -> Result<Vec<u8>, u32> {
+    let len = len.min(transport_capacity);
+    let mut bytes = Vec::new();
+    if bytes.try_reserve_exact(len).is_err() {
+        return Err(ENOMEM);
+    }
+    bytes.resize(len, 0);
+    Ok(bytes)
 }
 
 // ---------------------------------------------------------------------------
@@ -438,23 +498,14 @@ pub(crate) fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
         return fd::EBADF;
     }
 
-    let addr_size = core::mem::size_of::<SockaddrIn>();
+    let addr_size = SOCKADDR_IN_SIZE;
     if (addr_len as usize) < addr_size || addr_ptr == 0 {
         return fd::EINVAL;
     }
-    // Read: the sockaddr is copied OUT of user memory.
-    if !crate::memguard::validate_user_range(
-        addr_ptr as usize,
-        addr_size,
-        crate::memguard::Access::Read,
-    ) {
-        return fd::EFAULT;
-    }
-
-    // Read the sockaddr_in.
-    // SAFETY: validated above against the caller's own page tables with PL0
-    // read permission, so the whole struct is mapped and readable.
-    let sockaddr = unsafe { core::ptr::read_unaligned(addr_ptr as *const SockaddrIn) };
+    let sockaddr = match copy_sockaddr_from_user(addr_ptr as usize) {
+        Ok(sockaddr) => sockaddr,
+        Err(error) => return error,
+    };
 
     if sockaddr.sin_family != AF_INET as u16 {
         return EAFNOSUPPORT;
@@ -583,23 +634,14 @@ pub(crate) fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
         return fd::EBADF;
     }
 
-    let addr_size = core::mem::size_of::<SockaddrIn>();
+    let addr_size = SOCKADDR_IN_SIZE;
     if (addr_len as usize) < addr_size || addr_ptr == 0 {
         return fd::EINVAL;
     }
-    // Read: the sockaddr is copied OUT of user memory.
-    if !crate::memguard::validate_user_range(
-        addr_ptr as usize,
-        addr_size,
-        crate::memguard::Access::Read,
-    ) {
-        return fd::EFAULT;
-    }
-
-    // Read the sockaddr_in.
-    // SAFETY: validated above against the caller's own page tables with PL0
-    // read permission, so the whole struct is mapped and readable.
-    let sockaddr = unsafe { core::ptr::read_unaligned(addr_ptr as *const SockaddrIn) };
+    let sockaddr = match copy_sockaddr_from_user(addr_ptr as usize) {
+        Ok(sockaddr) => sockaddr,
+        Err(error) => return error,
+    };
 
     if sockaddr.sin_family != AF_INET as u16 {
         return EAFNOSUPPORT;
@@ -760,15 +802,6 @@ pub(crate) fn sys_sendto(
     if buf_ptr == 0 || len == 0 {
         return 0;
     }
-    // Read: the payload is copied OUT of this buffer and sent.
-    if !crate::memguard::validate_user_range(
-        buf_ptr as usize,
-        len as usize,
-        crate::memguard::Access::Read,
-    ) {
-        return fd::EFAULT;
-    }
-
     // Check fd is a socket.
     // Resolve the fd through the CURRENT process (#267): a process may only
     // name a socket it owns, and the OFD index -- not the fd number -- keys
@@ -787,16 +820,7 @@ pub(crate) fn sys_sendto(
 
     // SAFETY: single-core cooperative kernel.
     let sock_table = unsafe { get_socket_table() };
-    let Some(info) = &sock_table[ofd_idx] else {
-        return fd::EBADF;
-    };
-
-    // SAFETY: the current guard bounds this to configured DRAM only; #871
-    // owns caller-VAS/read-permission validation.
-    let data = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
-
-    // SAFETY: single-core cooperative kernel; init_network_stack called.
-    let Some(stack) = (unsafe { get_network_stack() }) else {
+    let Some(info) = sock_table[ofd_idx] else {
         return fd::EBADF;
     };
 
@@ -805,34 +829,62 @@ pub(crate) fn sys_sendto(
             if !info.connected {
                 return ENOTCONN;
             }
+            let transfer_len = (len as usize).min(net::TCP_TX_BUF_SIZE);
+            let Ok(mut data) = allocate_transfer_buffer(transfer_len, net::TCP_TX_BUF_SIZE) else {
+                return ENOMEM;
+            };
+            if crate::memguard::copy_from_user(buf_ptr as usize, &mut data).is_err() {
+                return fd::EFAULT;
+            }
+            // SAFETY: single-core cooperative kernel; init_network_stack called.
+            let Some(stack) = (unsafe { get_network_stack() }) else {
+                return fd::EBADF;
+            };
             let tcp_socket: &mut tcp::Socket<'_> = stack.sockets_mut().get_mut(info.socket_handle);
 
             if !tcp_socket.may_send() {
                 return ENOTCONN;
             }
 
-            match tcp_socket.send_slice(data) {
+            match tcp_socket.send_slice(&data) {
                 Ok(n) => n as u32,
                 Err(_) => ENOTCONN,
             }
         }
         SocketType::Udp => {
+            let requested = len as usize;
+            if requested > net::UDP_TX_BUF_SIZE {
+                return EMSGSIZE;
+            }
             // Determine destination: explicit addr or connected peer.
-            let dest = if dest_addr_ptr != 0
-                && (addr_len as usize) >= core::mem::size_of::<SockaddrIn>()
-                && crate::memguard::validate_user_range(
-                    dest_addr_ptr as usize,
-                    core::mem::size_of::<SockaddrIn>(),
-                    crate::memguard::Access::Read,
-                ) {
-                // SAFETY: validated above against the caller's own page tables
-                // with PL0 read permission.
-                let sa = unsafe { core::ptr::read_unaligned(dest_addr_ptr as *const SockaddrIn) };
+            let dest = if dest_addr_ptr != 0 {
+                if (addr_len as usize) < SOCKADDR_IN_SIZE {
+                    return fd::EINVAL;
+                }
+                let sa = match copy_sockaddr_from_user(dest_addr_ptr as usize) {
+                    Ok(sockaddr) => sockaddr,
+                    Err(error) => return error,
+                };
                 IpEndpoint::new(IpAddress::Ipv4(sa.ipv4_addr()), sa.port())
             } else if let Some((ip, port)) = info.peer_addr {
                 IpEndpoint::new(IpAddress::Ipv4(ip), port)
             } else {
                 return ENOTCONN;
+            };
+
+            // Copy the complete datagram before auto-bind or queue mutation.
+            // UDP is atomic rather than short-write: payloads larger than the
+            // transport capacity were rejected above with EMSGSIZE.
+            let Ok(mut data) = allocate_transfer_buffer(requested, net::UDP_TX_BUF_SIZE) else {
+                return ENOMEM;
+            };
+            if crate::memguard::copy_from_user(buf_ptr as usize, &mut data).is_err() {
+                return fd::EFAULT;
+            }
+
+            // SAFETY: single-core cooperative kernel; init_network_stack called.
+            let Some(stack) = (unsafe { get_network_stack() }) else {
+                return fd::EBADF;
             };
 
             let udp_socket: &mut udp::Socket<'_> = stack.sockets_mut().get_mut(info.socket_handle);
@@ -853,7 +905,7 @@ pub(crate) fn sys_sendto(
                 }
             }
 
-            match udp_socket.send_slice(data, dest) {
+            match udp_socket.send_slice(&data, dest) {
                 Ok(()) => len,
                 // WHY: smoltcp's udp::SendError distinguishes "no valid
                 // destination" from "the tx buffer has no room for this
@@ -898,15 +950,18 @@ pub(crate) fn sys_recvfrom(
     if buf_ptr == 0 || len == 0 {
         return 0;
     }
+    // A socket can transfer at most its fixed receive capacity in one call.
+    // Validate only that possible prefix so a gigantic attacker-controlled
+    // `len` cannot force a page-table walk over the whole address space.
+    let validation_len = (len as usize).min(net::TCP_RX_BUF_SIZE.max(net::UDP_RX_BUF_SIZE));
     // Write: received bytes are copied INTO this buffer.
     if !crate::memguard::validate_user_range(
         buf_ptr as usize,
-        len as usize,
+        validation_len,
         crate::memguard::Access::Write,
     ) {
         return fd::EFAULT;
     }
-
     // Check fd is a socket.
     // Resolve the fd through the CURRENT process (#267): a process may only
     // name a socket it owns, and the OFD index -- not the fd number -- keys
@@ -925,13 +980,9 @@ pub(crate) fn sys_recvfrom(
 
     // SAFETY: single-core cooperative kernel.
     let sock_table = unsafe { get_socket_table() };
-    let Some(info) = &sock_table[ofd_idx] else {
+    let Some(info) = sock_table[ofd_idx] else {
         return fd::EBADF;
     };
-
-    // SAFETY: the current guard bounds this to configured DRAM only; #871
-    // owns caller-VAS/write-permission validation.
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
 
     // SAFETY: single-core cooperative kernel; init_network_stack called.
     let Some(stack) = (unsafe { get_network_stack() }) else {
@@ -950,26 +1001,55 @@ pub(crate) fn sys_recvfrom(
                 return 0;
             }
 
-            match tcp_socket.recv_slice(buf) {
-                Ok(n) => n as u32,
-                Err(_) => 0,
+            let requested = (len as usize).min(net::TCP_RX_BUF_SIZE);
+            let Ok(received) = tcp_socket.peek(requested) else {
+                return 0;
+            };
+            let n = received.len();
+            if crate::memguard::copy_to_user(buf_ptr as usize, received).is_err() {
+                return fd::EFAULT;
+            }
+            // Commit only after copyout. On this single-core kernel no actor
+            // can alter the queue between peek and this consume.
+            match tcp_socket.recv(|available| (n.min(available.len()), ())) {
+                Ok(()) => n as u32,
+                Err(_) => fd::EIO,
             }
         }
         SocketType::Udp => {
+            // TCP explicitly ignores this optional UDP-only output. Validate it
+            // only after resolving the socket type, but before inspecting or
+            // consuming any datagram state.
+            if src_addr_ptr != 0
+                && !crate::memguard::validate_user_range(
+                    src_addr_ptr as usize,
+                    SOCKADDR_IN_SIZE,
+                    crate::memguard::Access::Write,
+                )
+            {
+                return fd::EFAULT;
+            }
             let udp_socket: &mut udp::Socket<'_> = stack.sockets_mut().get_mut(info.socket_handle);
 
-            match udp_socket.recv_slice(buf) {
-                Ok((n, meta)) => {
-                    // Optionally write the source address back. A bad
-                    // src_addr_ptr does not fail the read — the data is
-                    // already received — it just skips the writeback.
-                    if src_addr_ptr != 0
-                        && crate::memguard::validate_user_range(
-                            src_addr_ptr as usize,
-                            core::mem::size_of::<SockaddrIn>(),
-                            crate::memguard::Access::Write,
-                        )
-                    {
+            match udp_socket.peek() {
+                Ok((received, meta)) => {
+                    if received.len() > len as usize {
+                        // Preserve the established datagram semantics: a
+                        // too-small valid buffer drops this one packet and
+                        // reports EMSGSIZE. Uaccess failures below do NOT drop.
+                        return match udp_socket.recv() {
+                            Ok(_) => EMSGSIZE,
+                            Err(_) => fd::EIO,
+                        };
+                    }
+                    let n = received.len();
+                    let meta = *meta;
+                    // Each user copy can fault after prevalidation, so two
+                    // disjoint output buffers cannot be made byte-atomic as a
+                    // group. The transaction boundary we can guarantee is the
+                    // kernel-owned datagram: it remains queued until every
+                    // requested output copy completes.
+                    if src_addr_ptr != 0 {
                         let src_ip = match meta.endpoint.addr {
                             IpAddress::Ipv4(v4) => v4,
                             // Only IPv4 supported in this phase.
@@ -980,13 +1060,19 @@ pub(crate) fn sys_recvfrom(
                             _ => Ipv4Address::UNSPECIFIED,
                         };
                         let sa = SockaddrIn::new(meta.endpoint.port, src_ip);
-                        // SAFETY: the current guard bounds this to configured
-                        // DRAM; #871 owns caller-VAS/write-permission validation.
-                        unsafe {
-                            core::ptr::write_unaligned(src_addr_ptr as *mut SockaddrIn, sa);
+                        if copy_sockaddr_to_user(src_addr_ptr as usize, sa).is_err() {
+                            return fd::EFAULT;
                         }
                     }
-                    n as u32
+                    if crate::memguard::copy_to_user(buf_ptr as usize, received).is_err() {
+                        return fd::EFAULT;
+                    }
+                    // Both output families are now committed; only now remove
+                    // the datagram from the transport queue.
+                    match udp_socket.recv() {
+                        Ok((committed, _)) if committed.len() == n => n as u32,
+                        Ok(_) | Err(_) => fd::EIO,
+                    }
                 }
                 // WHY: collapsing every recv error to a bare 0 (the TCP
                 // arm's legitimate EOF sentinel) masked genuine UDP
@@ -997,6 +1083,8 @@ pub(crate) fn sys_recvfrom(
                 // received", or the caller can't tell a real truncation
                 // from an empty socket.
                 Err(udp::RecvError::Exhausted) => EAGAIN,
+                // `peek()` never truncates because it returns the queued slice
+                // directly; keep the arm exhaustive for the public enum.
                 Err(udp::RecvError::Truncated) => EMSGSIZE,
             }
         }
@@ -1031,6 +1119,12 @@ pub(crate) fn on_socket_fd_closed(ofd_idx: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transfer_allocation_is_bounded_by_transport_capacity() {
+        let bytes = allocate_transfer_buffer(usize::MAX, 64).expect("bounded allocation");
+        assert_eq!(bytes.len(), 64);
+    }
 
     /// Reset global state for test isolation.
     ///
@@ -1680,6 +1774,27 @@ mod tests {
         );
     }
 
+    /// TCP's recvfrom ABI ignores the UDP-only source-address output family.
+    /// An invalid ignored pointer must not preempt the stream's own state error.
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn tcp_recvfrom_does_not_validate_ignored_source_address() {
+        static mut BUF: [u8; 1] = [0u8; 1];
+
+        unsafe {
+            setup_test_network();
+        }
+        let fd = sys_socket(AF_INET, SOCK_STREAM, 0);
+        assert!(fd < MAX_FDS as u32);
+        let buf = core::ptr::addr_of_mut!(BUF).cast::<u8>();
+
+        assert_eq!(
+            sys_recvfrom(fd, buf as u32, 1, 0, crate::board::KERNEL_LOAD as u32, 0,),
+            ENOTCONN,
+            "an ignored TCP source-address pointer must not produce EFAULT"
+        );
+    }
+
     /// Pointer-dependent test: only runs on 32-bit targets.
     #[test]
     #[cfg(target_pointer_width = "32")]
@@ -1791,6 +1906,36 @@ mod tests {
         let recv_buf = unsafe { &mut *core::ptr::addr_of_mut!(RECV_BUF) };
         // SAFETY: test-only static; single-threaded per test.
         let src_addr = unsafe { &mut *core::ptr::addr_of_mut!(SRC_ADDR) };
+
+        // A transfer-time failure in either output family must leave the
+        // datagram queued. These hooks fire after prevalidation, modelling the
+        // exact fault-fixup path rather than a trivially bad pointer.
+        crate::memguard::fail_next_copy_to_user_for_test();
+        assert_eq!(
+            sys_recvfrom(
+                receiver_fd,
+                recv_buf.as_mut_ptr() as u32,
+                recv_buf.len() as u32,
+                0,
+                core::ptr::from_ref::<SockaddrIn>(src_addr) as u32,
+                0,
+            ),
+            fd::EFAULT,
+            "a source-address copyout fault must not dequeue the datagram"
+        );
+        crate::memguard::fail_next_copy_to_user_for_test();
+        assert_eq!(
+            sys_recvfrom(
+                receiver_fd,
+                recv_buf.as_mut_ptr() as u32,
+                recv_buf.len() as u32,
+                0,
+                0,
+                0,
+            ),
+            fd::EFAULT,
+            "a payload copyout fault must not dequeue the datagram"
+        );
 
         let recv_result = sys_recvfrom(
             receiver_fd,

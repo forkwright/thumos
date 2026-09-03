@@ -70,6 +70,19 @@ pub(crate) const OWNER_COUNT: usize = 2;
 /// first and the gate would have decided nothing.
 pub(crate) const STALL_DEADLINE_TICKS: u64 = 200;
 
+/// Canonical watchdog timeout in seconds, shared by hardware and emulation.
+///
+/// `watchdog.rs` derives the MT6739 `WDT_LENGTH` units from this value, while
+/// the QEMU model derives its 100 Hz countdown below. Changing the period in
+/// either backend therefore requires changing this single declaration.
+pub(crate) const WATCHDOG_TIMEOUT_SECONDS: u64 = 5;
+
+/// Timer IRQ cadence used to express the canonical timeout as scheduler ticks.
+const TIMER_TICKS_PER_SECOND: u64 = 100;
+
+/// The canonical watchdog period expressed in timer ticks.
+pub(crate) const WATCHDOG_TIMEOUT_TICKS: u64 = WATCHDOG_TIMEOUT_SECONDS * TIMER_TICKS_PER_SECOND;
+
 /// Ticks an intentional shutdown may take before the gate stops covering it.
 ///
 /// A shutdown legitimately stops scheduler and service-loop progress, so the
@@ -77,7 +90,7 @@ pub(crate) const STALL_DEADLINE_TICKS: u64 = 200;
 /// unconditionally once shutdown begins -- but only for this long, because a
 /// shutdown that HANGS is still a hang, and an unbounded exemption would turn
 /// the one path that disables the watchdog into a way to disable it forever.
-pub(crate) const SHUTDOWN_GRACE_TICKS: u64 = 500;
+pub(crate) const SHUTDOWN_GRACE_TICKS: u64 = WATCHDOG_TIMEOUT_TICKS;
 
 /// What the gate says about feeding the watchdog right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +106,16 @@ pub(crate) enum PetDecision {
         /// Ticks since that owner last advanced.
         stalled_ticks: u64,
     },
+}
+
+/// Result of entering the intentional-shutdown grace period.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub(crate) enum ShutdownTransition {
+    /// This request started the bounded grace window.
+    Started,
+    /// A prior request already started it; its original deadline is unchanged.
+    AlreadyStarted,
 }
 
 /// Per-owner progress counters.
@@ -173,8 +196,17 @@ impl LivenessGate {
     }
 
     /// Note that an intentional shutdown began at `now`.
-    pub(crate) const fn begin_shutdown(&mut self, now: u64) {
-        self.shutdown_since = Some(now);
+    ///
+    /// The first timestamp is immutable. A repeated or late request must not
+    /// extend the grace period, or a wedged shutdown could keep itself covered
+    /// forever by re-entering this boundary.
+    pub(crate) const fn begin_shutdown(&mut self, now: u64) -> ShutdownTransition {
+        if self.shutdown_since.is_some() {
+            ShutdownTransition::AlreadyStarted
+        } else {
+            self.shutdown_since = Some(now);
+            ShutdownTransition::Started
+        }
     }
 
     /// Decide whether to feed the watchdog.
@@ -269,10 +301,10 @@ pub(crate) unsafe fn arm(now: u64) {
 /// # Safety
 ///
 /// As [`arm`].
-pub(crate) unsafe fn begin_shutdown(now: u64) {
+pub(crate) unsafe fn begin_shutdown(now: u64) -> ShutdownTransition {
     // SAFETY: delegated to the caller's contract above.
     let gate = unsafe { &mut *core::ptr::addr_of_mut!(GATE) };
-    gate.begin_shutdown(now);
+    gate.begin_shutdown(now)
 }
 
 /// Decide whether to feed the watchdog this tick.
@@ -491,7 +523,11 @@ mod tests {
         let mut gate = LivenessGate::new();
         let epochs = [0u32; OWNER_COUNT];
         gate.arm(epochs, 0);
-        gate.begin_shutdown(1_000);
+        assert_eq!(
+            gate.begin_shutdown(1_000),
+            ShutdownTransition::Started,
+            "the first shutdown request must start the grace window"
+        );
 
         assert_eq!(
             gate.decide(epochs, 1_000 + SHUTDOWN_GRACE_TICKS),
@@ -508,13 +544,43 @@ mod tests {
     }
 
     #[test]
+    fn repeated_or_late_shutdown_requests_cannot_extend_grace() {
+        let mut gate = LivenessGate::new();
+        let epochs = [0u32; OWNER_COUNT];
+        gate.arm(epochs, 0);
+        let began = 1_000;
+
+        assert_eq!(
+            gate.begin_shutdown(began),
+            ShutdownTransition::Started,
+            "the first shutdown request must start the grace window"
+        );
+        assert_eq!(
+            gate.begin_shutdown(began + SHUTDOWN_GRACE_TICKS + 1),
+            ShutdownTransition::AlreadyStarted,
+            "a late repeat must retain the original shutdown deadline"
+        );
+        assert_eq!(
+            gate.decide(epochs, began + SHUTDOWN_GRACE_TICKS + 1),
+            PetDecision::Withhold {
+                owner: None,
+                stalled_ticks: SHUTDOWN_GRACE_TICKS + 1,
+            },
+            "re-entering shutdown must not turn an expired grace window green"
+        );
+    }
+
+    #[test]
     fn the_deadline_leaves_room_for_the_refusal_to_be_logged() {
         // The point of refusing early is that the log lands before the reset.
         // A deadline at or past the hardware period would never be reached --
         // the device would reset first and the gate would have decided nothing.
-        const TICK_HZ: u64 = 100;
-        const WATCHDOG_SECS: u64 = 5;
-        let hardware_period_ticks = TICK_HZ * WATCHDOG_SECS;
+        const TICK_HZ: u64 = TIMER_TICKS_PER_SECOND;
+        let hardware_period_ticks = WATCHDOG_TIMEOUT_TICKS;
+        assert_eq!(
+            WATCHDOG_TIMEOUT_SECONDS, 5,
+            "the canonical watchdog duration must remain the accepted five seconds"
+        );
         assert!(
             STALL_DEADLINE_TICKS < hardware_period_ticks,
             "the stall deadline must fire before the hardware does"

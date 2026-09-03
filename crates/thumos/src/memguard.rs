@@ -1,20 +1,108 @@
-//! User-pointer memory guards shared across syscall entry points.
+//! Fault-contained user-memory access shared across syscall entry points.
 //!
 //! Two guards live here, and the difference between them is the whole point of
-//! the module. [`validate_user_buffer`] answers a numeric question: does this
-//! range lie inside allocatable DRAM. [`validate_user_range`] answers the
-//! security question: may *this caller* touch these pages in *this direction*,
-//! according to its own page tables. Syscall entry points want the second one;
-//! the first survives as its cheap first gate and for the one caller that has
-//! no caller VAS to check against (ELF segment placement, where the target is
-//! identity-mapped before any per-process table exists).
+//! the module. [`validate_user_buffer`] answers a bootstrap/identity-map
+//! question: does this physical range lie inside allocatable DRAM.
+//! [`validate_user_range`] answers the syscall security question: may *this
+//! caller* touch these virtual pages in *this direction*, according to its own
+//! page tables. Syscall entry points want the second one; the first survives
+//! for callers with no VAS to consult (ELF segment placement, where the target
+//! is identity-mapped before any per-process table exists).
+//!
+//! Validation alone is insufficient: a mapping can change after the walk and
+//! a PL1 load/store ignores PL0 permissions. [`copy_from_user`] and
+//! [`copy_to_user`] therefore perform the actual transfer with ARM's
+//! unprivileged access instructions. A data abort at either exact instruction
+//! is redirected to its assembly fixup by [`fault_fixup_pc`], producing
+//! [`UserAccessError`] instead of halting the kernel. Every other PL1 fault
+//! retains the kernel-halt disposition.
 //!
 //! This logic lives here, in an always-compiled module (not the
 //! hardware-coupled `syscall` module, which is excluded from host test builds),
 //! so that pointer-taking subsystems (`pipe`, `fd`, `socket`, `time`, ...) can
 //! call it and — crucially — so the guards have runnable host unit tests.
 
+#[cfg(test)]
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use crate::board;
+
+/// Host-only execution-fault injection. This sits after the permission walk,
+/// so rollback tests can distinguish a transfer-time failure from ordinary
+/// prevalidation without pretending x86 has ARM unprivileged instructions.
+#[cfg(test)]
+static FAIL_NEXT_COPY_TO_USER: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+pub(crate) fn fail_next_copy_to_user_for_test() {
+    FAIL_NEXT_COPY_TO_USER.store(true, Ordering::Release);
+}
+
+/// A user-memory transfer could not access the complete requested range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct UserAccessError;
+
+#[cfg(target_arch = "arm")]
+core::arch::global_asm!(
+    ".section .text",
+    ".arm",
+    ".balign 4",
+    ".global __thumos_copy_from_user",
+    ".type __thumos_copy_from_user, %function",
+    "__thumos_copy_from_user:",
+    "    cmp     r2, #0",
+    "    beq     2f",
+    "1:",
+    ".global __thumos_copy_from_user_fault",
+    "__thumos_copy_from_user_fault:",
+    // LDRBT applies PL0 permissions even though the copy runs in a privileged
+    // exception mode. The exact instruction address is the recovery key.
+    "    ldrbt   r3, [r1], #1",
+    "    strb    r3, [r0], #1",
+    "    subs    r2, r2, #1",
+    "    bne     1b",
+    "2:",
+    "    mov     r0, #0",
+    "    bx      lr",
+    ".global __thumos_copy_from_user_fixup",
+    "__thumos_copy_from_user_fixup:",
+    "    mov     r0, #1",
+    "    bx      lr",
+    ".size __thumos_copy_from_user, .-__thumos_copy_from_user",
+    ".balign 4",
+    ".global __thumos_copy_to_user",
+    ".type __thumos_copy_to_user, %function",
+    "__thumos_copy_to_user:",
+    "    cmp     r2, #0",
+    "    beq     4f",
+    "3:",
+    "    ldrb    r3, [r1], #1",
+    ".global __thumos_copy_to_user_fault",
+    "__thumos_copy_to_user_fault:",
+    // STRBT is the write-direction counterpart: PL0 write permission is
+    // checked at the store itself, closing validation/dereference races.
+    "    strbt   r3, [r0], #1",
+    "    subs    r2, r2, #1",
+    "    bne     3b",
+    "4:",
+    "    mov     r0, #0",
+    "    bx      lr",
+    ".global __thumos_copy_to_user_fixup",
+    "__thumos_copy_to_user_fixup:",
+    "    mov     r0, #1",
+    "    bx      lr",
+    ".size __thumos_copy_to_user, .-__thumos_copy_to_user",
+);
+
+#[cfg(target_arch = "arm")]
+unsafe extern "C" {
+    fn __thumos_copy_from_user(dst: *mut u8, src: *const u8, len: usize) -> u32;
+    fn __thumos_copy_to_user(dst: *mut u8, src: *const u8, len: usize) -> u32;
+    static __thumos_copy_from_user_fault: u8;
+    static __thumos_copy_from_user_fixup: u8;
+    static __thumos_copy_to_user_fault: u8;
+    static __thumos_copy_to_user_fixup: u8;
+}
 
 /// Validate that a user-supplied numeric buffer range `[ptr, ptr+len)` lies
 /// inside the broad DRAM window and avoids statically reserved kernel memory.
@@ -163,42 +251,191 @@ fn range_grants(
     true
 }
 
+/// Check the address arithmetic shared by identity and virtual ranges.
+fn range_is_well_formed(ptr: usize, len: usize) -> bool {
+    ptr != 0 && ptr.checked_add(len).is_some()
+}
+
+/// Pure policy seam for the live-VAS/no-VAS split.
+///
+/// With a descriptor reader, virtual mappings are authoritative after the
+/// null/overflow check. Without one, bootstrap identity-map DRAM bounds are
+/// the only available authority. Keeping this seam pure pins the #890
+/// modelling correction on hosts without manufacturing a live MMU.
+fn validate_user_range_with(
+    ptr: usize,
+    len: usize,
+    access: Access,
+    read_desc: Option<&mut dyn FnMut(usize) -> Option<u32>>,
+) -> bool {
+    if !range_is_well_formed(ptr, len) {
+        return false;
+    }
+    match read_desc {
+        Some(read_desc) => range_grants(ptr, len, access, read_desc),
+        None => validate_user_buffer(ptr, len),
+    }
+}
+
 /// Validate that `[ptr, ptr+len)` is a legitimate user buffer for `access`.
 ///
-/// Two independent gates, both required:
+/// With a live caller VAS, two independent questions are required:
 ///
-/// 1. The numeric gate (`validate_user_buffer`): the range is non-null, does
-///    not wrap, and lies inside the allocatable DRAM window.
-/// 2. The mapping gate: every page in the range is mapped by the *calling*
+/// 1. The address range is non-null and does not wrap.
+/// 2. Every page in the range is mapped by the *calling*
 ///    process with PL0 permission in this direction.
 ///
 /// The second gate is what makes this a security boundary rather than a bounds
 /// check. It rejects holes, `PROT_NONE`, read-only destinations, kernel and
 /// allocator identity mappings, and pages belonging to another process — none
-/// of which the numeric gate can see, because at PL1 the kernel identity-maps
-/// DRAM and every one of those addresses is numerically ordinary.
+/// of which address arithmetic can see. The VAS is authoritative even below
+/// `KERNEL_END`: anonymous mappings begin at `process::MMAP_BASE`
+/// (`0x2000_0000`), and #890's unconditional identity-DRAM gate incorrectly
+/// made those legitimate mappings unusable as syscall buffers.
 ///
 /// WHY the mapping gate is conditional on a user address space: it asks what
 /// the caller's page tables say, and that question only has an answer while a
 /// user process is current. `process::current_user_page_table` decides that
 /// positively — a non-zero PID holding a table of its own, not PID 0's kernel
 /// global L1 — so a PL0 caller, which by construction has such a table, cannot
-/// reach the numeric-only path. A host test build has no MMU and no user
-/// address space, so there the numeric gate is the whole check; the mapping
-/// gate's behaviour is covered by tests that drive `range_grants` over a
-/// descriptor reader directly.
+/// reach the identity-DRAM fallback. PID 0/bootstrap and host fixtures without
+/// a user VAS retain [`validate_user_buffer`]'s physical-range policy.
 pub(crate) fn validate_user_range(ptr: usize, len: usize, access: Access) -> bool {
-    if !validate_user_buffer(ptr, len) {
-        return false;
-    }
     let Some(l1) = crate::process::current_user_page_table() else {
-        return true;
+        return validate_user_range_with(ptr, len, access, None);
     };
-    range_grants(ptr, len, access, |va| {
+    let mut read_desc = |va| {
         // SAFETY: `l1` is a live user L1 taken from the process table, and
         // `range_grants` only ever passes page-aligned addresses.
         unsafe { crate::mmu::read_l2_entry(l1, va) }
-    })
+    };
+    validate_user_range_with(ptr, len, access, Some(&mut read_desc))
+}
+
+/// Copy a complete byte slice out of the calling process.
+///
+/// The whole range is permission-walked before the first byte is read, then
+/// each ARM load is performed with PL0 permissions. The second check is what
+/// closes an unmap/mprotect race between validation and dereference.
+pub(crate) fn copy_from_user(src: usize, dst: &mut [u8]) -> Result<(), UserAccessError> {
+    if !validate_user_range(src, dst.len(), Access::Read) {
+        return Err(UserAccessError);
+    }
+    copy_from_user_after_validation(src, dst)
+}
+
+/// Copy a complete byte slice into the calling process.
+///
+/// The destination is permission-walked for PL0 write access before any byte
+/// is stored. ARM then uses unprivileged stores so a stale or concurrently
+/// changed descriptor becomes a contained [`UserAccessError`].
+pub(crate) fn copy_to_user(dst: usize, src: &[u8]) -> Result<(), UserAccessError> {
+    if !validate_user_range(dst, src.len(), Access::Write) {
+        return Err(UserAccessError);
+    }
+    copy_to_user_after_validation(dst, src)
+}
+
+#[cfg(target_arch = "arm")]
+fn copy_from_user_after_validation(src: usize, dst: &mut [u8]) -> Result<(), UserAccessError> {
+    // SAFETY: the numeric and caller-VAS gates accepted the full source range;
+    // the assembly routine bounds itself by dst.len() and uses LDRBT for the
+    // only user-memory access. A data abort at that instruction resumes at its
+    // error fixup rather than escaping this call.
+    let failed =
+        unsafe { __thumos_copy_from_user(dst.as_mut_ptr(), src as *const u8, dst.len()) != 0 };
+    if failed { Err(UserAccessError) } else { Ok(()) }
+}
+
+#[cfg(not(target_arch = "arm"))]
+fn copy_from_user_after_validation(src: usize, dst: &mut [u8]) -> Result<(), UserAccessError> {
+    let Some(src_ptr) = core::ptr::NonNull::new(src as *mut u8) else {
+        return Err(UserAccessError);
+    };
+    // SAFETY: host syscall fixtures map their backing statics with
+    // process::map_user_buffer_for_test before entering this function. Host
+    // CPUs have no ARM unprivileged-transfer instruction; the permission walk
+    // above is the executable half of this path and QEMU covers the fixup.
+    unsafe {
+        core::ptr::copy_nonoverlapping(src_ptr.as_ptr().cast_const(), dst.as_mut_ptr(), dst.len());
+    }
+    Ok(())
+}
+
+#[cfg(target_arch = "arm")]
+fn copy_to_user_after_validation(dst: usize, src: &[u8]) -> Result<(), UserAccessError> {
+    // SAFETY: the numeric and caller-VAS gates accepted the full destination;
+    // STRBT is the only user-memory store and its abort site has an exact
+    // fixup. The ordinary source load remains privileged so a kernel-source
+    // fault still takes the kernel-halt path.
+    let failed = unsafe { __thumos_copy_to_user(dst as *mut u8, src.as_ptr(), src.len()) != 0 };
+    if failed { Err(UserAccessError) } else { Ok(()) }
+}
+
+#[cfg(not(target_arch = "arm"))]
+fn copy_to_user_after_validation(dst: usize, src: &[u8]) -> Result<(), UserAccessError> {
+    let Some(dst_ptr) = core::ptr::NonNull::new(dst as *mut u8) else {
+        return Err(UserAccessError);
+    };
+    #[cfg(test)]
+    if FAIL_NEXT_COPY_TO_USER.swap(false, Ordering::AcqRel) {
+        return Err(UserAccessError);
+    }
+    // SAFETY: same host-fixture contract as copy_from_user_after_validation;
+    // ranges have already passed the caller-VAS permission walk.
+    unsafe {
+        core::ptr::copy_nonoverlapping(src.as_ptr(), dst_ptr.as_ptr(), src.len());
+    }
+    Ok(())
+}
+
+/// Return the sole legal recovery PC for a data abort at `fault_pc`.
+///
+/// The exception handler consults this before applying the ordinary PL1-halt
+/// policy. Exact instruction equality is load-bearing: an abort in validation,
+/// a kernel-side source/destination, or any unrelated code is never recovered.
+#[cfg(target_arch = "arm")]
+pub(crate) fn fault_fixup_pc(fault_pc: u32) -> Option<u32> {
+    // These linker symbols name instructions in this image. Taking their
+    // addresses reads no memory and the armv7a image is 32-bit.
+    let from_fault = core::ptr::addr_of!(__thumos_copy_from_user_fault) as usize;
+    let from_fixup = core::ptr::addr_of!(__thumos_copy_from_user_fixup) as usize;
+    let to_fault = core::ptr::addr_of!(__thumos_copy_to_user_fault) as usize;
+    let to_fixup = core::ptr::addr_of!(__thumos_copy_to_user_fixup) as usize;
+
+    if usize::try_from(fault_pc).ok() == Some(from_fault) {
+        u32::try_from(from_fixup).ok()
+    } else if usize::try_from(fault_pc).ok() == Some(to_fault) {
+        u32::try_from(to_fixup).ok()
+    } else {
+        None
+    }
+}
+
+/// Non-ARM builds have no unprivileged-transfer instructions and therefore no
+/// legal kernel-fault recovery site. Keeping the seam present makes host
+/// clippy compile the real exception handler while preserving fail-closed
+/// behavior.
+#[cfg(not(target_arch = "arm"))]
+pub(crate) const fn fault_fixup_pc(_fault_pc: u32) -> Option<u32> {
+    None
+}
+
+/// Exercise both real data-abort fixups for the QEMU target witness.
+///
+/// This deliberately bypasses the preflight gate so the transfer instruction,
+/// not validation, receives a PL1-only address. It is compiled only into the
+/// dedicated non-production witness feature.
+#[cfg(all(target_arch = "arm", feature = "uaccess-probe"))]
+pub(crate) fn qemu_fault_fixup_probe() -> bool {
+    let mut byte = [0u8; 1];
+    let source_fault = copy_from_user_after_validation(board::KERNEL_LOAD, &mut byte).is_err();
+    // Preserve the target byte if STRBT unexpectedly succeeds: the negative
+    // probe must fail loudly, not corrupt the image it is using as evidence.
+    // SAFETY: KERNEL_LOAD is a live privileged mapping in this kernel image.
+    let original = unsafe { (board::KERNEL_LOAD as *const u8).read_volatile() };
+    let destination_fault = copy_to_user_after_validation(board::KERNEL_LOAD, &[original]).is_err();
+    source_fault && destination_fault
 }
 
 #[cfg(test)]
@@ -344,6 +581,18 @@ mod tests {
     }
 
     #[test]
+    fn pl0_denies_execute_only_user_page_in_both_data_directions() {
+        // ARM execute permission is controlled separately from AP. The MMU's
+        // sole user-descriptor funnel represents POSIX PROT_EXEC without READ
+        // or WRITE as user-owned but AP_KERNEL_ONLY: executable at PL0, never
+        // a legal syscall data source or destination.
+        let e = prot_to_l2_flags(prot::PROT_EXEC);
+        assert!(crate::mmu::l2_entry_is_user(e));
+        assert!(!pl0_grants(e, Access::Read));
+        assert!(!pl0_grants(e, Access::Write));
+    }
+
+    #[test]
     fn pl0_denies_kernel_fill_page() {
         let e = page_flags::SMALL_PAGE
             | page_flags::SHAREABLE
@@ -390,6 +639,42 @@ mod tests {
         assert!(range_grants(USER_BASE, PAGE * 2, Access::Write, |_| Some(
             rw_page()
         )));
+    }
+
+    #[test]
+    fn live_vas_accepts_a_low_anonymous_mapping() {
+        // #890's unconditional identity-DRAM gate rejected this address before
+        // consulting the descriptor, even though mmap deliberately allocates
+        // from 0x2000_0000. With a caller VAS, the user-RW L2 is authoritative.
+        let mmap_base = crate::process::MMAP_BASE;
+        assert!(
+            mmap_base < board::KERNEL_END,
+            "fixture must expose the old gate"
+        );
+        let mut read_desc = |_va| Some(rw_page());
+        assert!(validate_user_range_with(
+            mmap_base,
+            PAGE,
+            Access::Write,
+            Some(&mut read_desc)
+        ));
+    }
+
+    #[test]
+    fn no_vas_retains_the_identity_dram_boundary() {
+        let mmap_base = crate::process::MMAP_BASE;
+        assert!(!validate_user_range_with(
+            mmap_base,
+            PAGE,
+            Access::Read,
+            None
+        ));
+        assert!(validate_user_range_with(
+            board::KERNEL_END,
+            PAGE,
+            Access::Read,
+            None
+        ));
     }
 
     #[test]
@@ -463,9 +748,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_user_range_keeps_the_numeric_gate() {
-        // The mapping gate is additive: everything the numeric gate rejected
-        // must still be rejected, whether or not an address space is active.
+    fn validate_user_range_without_a_vas_keeps_the_identity_gate() {
+        // Test binaries begin as PID 0 with no caller VAS, so the bootstrap
+        // identity-DRAM policy remains authoritative on this path.
         assert!(!validate_user_range(0, 4, Access::Read));
         assert!(!validate_user_range(board::KERNEL_LOAD, 4, Access::Read));
         assert!(!validate_user_range(0x1100_2000, 4, Access::Write));

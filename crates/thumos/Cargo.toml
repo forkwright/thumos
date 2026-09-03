@@ -1,7 +1,7 @@
 [package]
 name = "thumos"
 description = "Thumos kernel: bare-metal Rust OS for the MT6739"
-version = "0.8.7"
+version = "0.9.1"
 edition = "2024"
 license = "AGPL-3.0-only"
 repository = "https://github.com/forkwright/thumos"
@@ -23,19 +23,42 @@ debug-console = []
 # this crate-local edit set).
 production = []
 # WHY: QEMU `-machine virt` bring-up harness -- remaps UART/GIC base constants
-# (kconfig.rs), swaps the MTK UART driver for a PL011 (uart_pl011.rs), no-ops
-# modeled watchdog/display operations, skips init of hardware virt does not
-# model (eMMC/display/keypad/USB/CCCI), and reports
+# (kconfig.rs), swaps the MTK UART driver for a PL011 (uart_pl011.rs), models
+# the watchdog countdown in software, no-ops display operations, skips init of
+# hardware virt does not model (eMMC/display/keypad/USB/CCCI), and reports
 # boot outcome via semihosting exit codes. Never enabled by default; the
 # MT6739 build is unchanged without it. CPU DVFS/core-parking actuation is
 # absent from every runtime build pending #879. Mutually exclusive with
 # `production` (see main.rs compile_error!).
 qemu = []
+# WHY (#875 negative witness): QEMU-only liveness fault injection. PID 0 stops
+# recording its service-loop epoch after a bounded healthy prefix while the
+# scheduler keeps advancing. The observable watchdog model must then refuse
+# pets and terminate with its expiry status. main.rs requires `qemu` and
+# excludes combination with the controlled-reboot probe.
+watchdog-stall-probe = []
+# WHY (#875 integration witness): QEMU-only controlled-reboot injection. The
+# live service loop invokes the same shutdown coordinator as the console path,
+# and the QEMU reset backend terminates with a distinct status. main.rs requires
+# `qemu` and excludes combination with the stall probe.
+watchdog-reboot-probe = []
+# WHY (#875 hung-shutdown witness): QEMU-only reset-failure injection. The live
+# service loop enters the production shutdown coordinator, but the QEMU reset
+# backend deliberately returns. Timer IRQs must pet only through the immutable
+# shutdown grace, reject a late re-entry, then let the modeled watchdog expire.
+# main.rs requires `qemu` and excludes combination with the other probes.
+watchdog-shutdown-hang-probe = []
 # WHY (#487 fault-handling): CI fault-injection harness -- executes a deliberate
 # PL1 `udf` after boot-complete so CI permanently pins the kernel-fault-HALTS
 # branch (qemu exit 4, no service-loop resume). Only meaningful with `qemu`;
 # mutually exclusive with `production` (main.rs compile_error!).
 kfault-probe = []
+# WHY (#871): QEMU-only data-abort recovery witness. Once the exception table
+# is installed it drives both uaccess assembly instructions against a PL1-only
+# page so CI proves their exact-PC fixups return an error while unrelated PL1
+# faults still halt.
+# Mutually exclusive with production (main.rs compile_error!).
+uaccess-probe = []
 # WHY (#492 fault supervision): CI crash-loop harness -- kinit spawns /crasher
 # (a program that data-aborts on every launch) and registers it SUPERVISED, so
 # CI can witness PID 0's restart policy end to end: restart x3, then give up.
@@ -100,7 +123,7 @@ zeroize = { version = "1", default-features = false }
 # is the signal to collapse the split when argon2 0.6 leaves release-candidate.
 # The alternative -- pinning 0.6.0-rc -- would make this the kernel's first
 # pre-release dependency, in the path that verifies the Sentinel-exit secret.
-argon2 = { version = "0.5.3", default-features = false }
+argon2 = { version = "0.6.0", default-features = false }
 # WHY (#545, #819): the canonical EAPOL frame parse/encode, PMK/PTK
 # derivation, MIC, and 4-way handshake state machine live in aither-core,
 # shared no_std+alloc with the `aither` workspace crate -- one
@@ -186,7 +209,7 @@ serde = { version = "1", default-features = false, features = [
     "derive",
     "alloc",
 ] }
-smoltcp = { version = "0.13", default-features = false, features = [
+smoltcp = { version = "0.14", default-features = false, features = [
     "medium-ethernet",
     "proto-ipv4",
     "socket-tcp",

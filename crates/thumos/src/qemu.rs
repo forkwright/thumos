@@ -5,7 +5,9 @@
 //! by `examples/qemu_smoke.rs`. Compiled only under `--features qemu`.
 //!
 //! Exit-code contract (asserted by CI): 0 = boot-complete, 1 = panic,
-//! 2 = data abort, 3 = prefetch abort, 4 = undefined instruction.
+//! 2 = data abort, 3 = prefetch abort, 4 = undefined instruction,
+//! 5 = service-loop stall, 6 = secure-boot halt, 7 = modeled watchdog expiry,
+//! 8 = controlled reboot, 9 = malformed watchdog fault-injection run.
 //!
 //! WHY(#692): the semihosting trap below binds `r0`/`r1` as explicit asm
 //! operands, which is AArch32-only -- `r0`/`r1` are not registers on the
@@ -32,6 +34,15 @@ const SYS_WRITE0: u32 = 0x04;
 /// ADP_Stopped_ApplicationExit reason code.
 #[cfg(target_arch = "arm")]
 const ADP_STOPPED_APPLICATION_EXIT: u32 = 0x2_0026;
+
+/// Exit status emitted when the QEMU watchdog model reaches its deadline.
+pub(crate) const WATCHDOG_EXPIRED_EXIT: u32 = 7;
+
+/// Exit status emitted when the controlled-shutdown coordinator requests reset.
+pub(crate) const CONTROLLED_REBOOT_EXIT: u32 = 8;
+
+/// Exit status emitted when a watchdog fault-injection invariant fails.
+pub(crate) const WATCHDOG_PROBE_FAILURE_EXIT: u32 = 9;
 
 /// Terminate the guest; `status` becomes the QEMU process exit code.
 #[cfg(target_arch = "arm")]

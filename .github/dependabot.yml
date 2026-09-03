@@ -1,47 +1,29 @@
 version: 2
 
-# WHY three cargo entries where the rest of the fleet has one: thumos carries
-# three independent dependency graphs, each with its own lockfile. The kernel
-# crate is excluded from the workspace so it can cross-compile bare-metal to
-# armv7a-none-eabi, and fuzz/ declares its own empty [workspace] because
-# cargo-fuzz requires nightly. A config watching only `/` leaves the other two
-# unwatched -- which is how fuzz/Cargo.lock drifted nine releases with two
-# path-dependencies missing entirely, invisible to cargo audit and cargo deny
-# the whole time (#768).
-
+# WARNING: `directories`, not `directory`. thumos carries three independent
+# dependency graphs, each with its own lockfile: the kernel crate is excluded
+# from the workspace so it can cross-compile bare-metal to armv7a-none-eabi,
+# and fuzz/ declares its own empty [workspace] because cargo-fuzz requires
+# nightly. A config watching only `/` leaves the other two unwatched -- which is
+# how fuzz/Cargo.lock drifted nine releases with two path-dependencies missing
+# entirely, invisible to cargo audit and cargo deny the whole time (#768).
+#
+# One entry listing all three, rather than three entries each watching one.
+# Three separate entries cover the same graphs but guarantee a SEPARATE PR per
+# directory, and a version bump declared in the root manifest spans all three --
+# so each PR regenerates one lockfile, leaves the other two stale against the
+# manifest they resolve from, and fails this repo's own drift gates. None of
+# them can pass alone. That is what happened to the smoltcp 0.14 bump: three
+# PRs (#923, #924, #925), none mergeable, consolidated by hand into #926.
+#
+# A new excluded workspace needs a row here -- nothing fails when one is
+# missing, which is why both went unnoticed the first time.
 updates:
   - package-ecosystem: cargo
-    directory: /
-    schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 10
-    groups:
-      patch-updates:
-        update-types: [patch]
-      minor-updates:
-        update-types: [minor]
-    reviewers:
-      - forkwright
-
-  # Kernel crate: excluded from the workspace, own Cargo.lock.
-  - package-ecosystem: cargo
-    directory: /crates/thumos
-    schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 10
-    groups:
-      patch-updates:
-        update-types: [patch]
-      minor-updates:
-        update-types: [minor]
-    reviewers:
-      - forkwright
-
-  # Fuzz targets: own [workspace], own Cargo.lock, nightly-only.
-  - package-ecosystem: cargo
-    directory: /fuzz
+    directories:
+      - /
+      - /crates/thumos
+      - /fuzz
     schedule:
       interval: weekly
       day: monday

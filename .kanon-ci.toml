@@ -25,6 +25,10 @@
 stages = [
     "cargo fmt",
     "cargo check",
+    # WHY (#944): prove the branch-protection-required kernel job runs the
+    # canonical source inventory check before its docs-only exemption, and
+    # that the checker rejects a deliberately malformed isolated fixture.
+    "docs-only kernel gate",
     # WHY before "kernel build": a source-level grep that names the CAUSE of the
     # link failure the next stage would otherwise report as undefined symbols.
     "kernel build entrypoint",
@@ -65,6 +69,10 @@ timeout_secs = 300
 [stages."cargo check"]
 cmd = "cargo check --workspace --all-targets --locked --jobs 8"
 timeout_secs = 900
+
+[stages."docs-only kernel gate"]
+cmd = "scripts/check-docs-only-kernel-gate.sh"
+timeout_secs = 120
 
 # WHY (#546): env RUSTFLAGS REPLACES the rustflags in crates/thumos/.cargo/
 # config.toml rather than merging, so a kernel build that inherits the variable
@@ -152,9 +160,9 @@ timeout_secs = 120
 cmd = "scripts/check-convergence.sh"
 timeout_secs = 300
 
-# WHY (#546): the full QEMU witness matrix (boot + fault + sleep + fork +
-# exec + forkexec + guard + brk + signal + crashloop) as one canonical runner — the
-# exact scripts ci.yml executes step-by-step.
+# WHY (#546/#875): the full QEMU witness matrix (boot + watchdog + fault +
+# sleep + fork + exec + forkexec + guard + brk + signal + crashloop) as one
+# canonical runner — the exact scripts ci.yml executes step-by-step.
 [stages."kernel qemu witnesses"]
 cmd = "scripts/witness-run-all.sh"
 timeout_secs = 3600

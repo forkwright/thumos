@@ -64,8 +64,8 @@ mapfile -t KERNEL_FEATURES < <(
 # one pass per declared feature, EXCEPT where the feature is never built any
 # other way in this repo, in which case it is paired with its required
 # companion instead of tested alone:
-#   - kfault-probe, crashloop-probe: only ever built with qemu, in
-#     scripts/witness/{kfault,crashloop}.sh -- their Cargo.toml comments say
+#   - kfault-probe, uaccess-probe, crashloop-probe: only ever built with qemu,
+#     in scripts/witness/{kfault,uaccess,crashloop}.sh -- their Cargo.toml comments say
 #     "only meaningful with qemu", and for kfault-probe that is structural:
 #     its one feature-gated site (kinit.rs) is ALSO target_arch = "arm"-
 #     gated, so a solo i686 pass would exercise zero additional code and
@@ -83,7 +83,14 @@ mapfile -t KERNEL_FEATURES < <(
 # automatically -- silence here means "buildable alone", not "unseen".
 declare -A REQUIRES=(
     [kfault-probe]="qemu"
+    [uaccess-probe]="qemu"
     [crashloop-probe]="qemu"
+    # WHY (#875): both watchdog probes are structurally refused without the
+    # observable QEMU backend; a solo pass would stop at compile_error! before
+    # clippy reached their injection sites.
+    [watchdog-stall-probe]="qemu"
+    [watchdog-reboot-probe]="qemu"
+    [watchdog-shutdown-hang-probe]="qemu"
     [metaxu-probe]="qemu"
     # WHY (#544 negative-case witness): both imply metaxu-probe (Cargo.toml
     # feature dependency), which itself CANNOT build without qemu (main.rs

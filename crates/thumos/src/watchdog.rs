@@ -1,9 +1,9 @@
 //! MT6739 Watchdog Timer (WDT) driver.
 //!
 //! The MT6739 WDT resets the `SoC` if software stops petting it within the
-//! configured timeout. The current timer IRQ pets before scheduler/service-loop
-//! progress, so it catches interrupt starvation but can mask a live-IRQ
-//! scheduler deadlock. #875 owns progress-coupled liveness.
+//! configured timeout. The timer IRQ pets only after the progress gate accepts
+//! fresh scheduler and PID-0 service-loop epochs. Controlled reboot requests
+//! enter the same gate's bounded shutdown grace before writing `WDT_SWRST`.
 //!
 //! Register facts have two independent grounds. The MT6739 vendor device tree
 //! places TOPRGU/WDT at `0x1000_7000`, and its WDT header defines the offsets and
@@ -23,6 +23,7 @@
 //! | 0x04   | `WDT_LENGTH`  | Timeout value (encoded, see below)             |
 //! | 0x08   | `WDT_RESTART` | Write 0x1971 to reset the countdown            |
 //! | 0x0C   | `WDT_STATUS`  | Reset cause; HW/SW/IRQ WDT are bits 31/30/29   |
+//! | 0x14   | `WDT_SWRST`   | Write 0x1209 to request a software reset       |
 //!
 //! Timeout encoding (`WDT_LENGTH)`:
 //!   bits [15:5] = timeout in units of 512/32768 s ≈ 15.6 ms per unit
@@ -65,8 +66,14 @@ const WDT_LENGTH: usize = crate::board::WDT_BASE + 0x04;
 /// `WDT_RESTART`: write 0x1971 here to pet the watchdog.
 const WDT_RESTART: usize = crate::board::WDT_BASE + 0x08;
 
+/// `WDT_SWRST`: write 0x1209 here to request a whole-system reset.
+const WDT_SWRST: usize = crate::board::WDT_BASE + 0x14;
+
 /// Magic value required to pet (restart) the watchdog countdown.
 const WDT_RESTART_KEY: u32 = 0x1971;
+
+/// Magic value required to request a software reset.
+const WDT_SWRST_KEY: u32 = 0x1209;
 
 /// `WDT_MODE` enable bit (bit 0).
 const WDT_MODE_EN: u32 = 1 << 0;
@@ -94,14 +101,27 @@ const fn mode_disable_value(current: u32) -> u32 {
 }
 
 /// `WDT_LENGTH` key bits [4:0]: must be 0x08 to commit a length write.
-const WDT_LENGTH_KEY: u32 = 0x08;
+const WDT_LENGTH_KEY: u64 = 0x08;
 
-/// Timeout in `WDT_LENGTH` units (each unit ≈ 15.6 ms; 320 ≈ 5 seconds).
-/// Calculation: `5_000` ms / 15.625 ms = 320.
-const WDT_TIMEOUT_UNITS: u32 = 320;
+/// `WDT_LENGTH` advances at 64 units per second (32768 / 512).
+const WDT_UNITS_PER_SECOND: u64 = 64;
+
+/// Timeout units mechanically derived from the canonical watchdog duration.
+const WDT_TIMEOUT_UNITS: u64 = crate::liveness::WATCHDOG_TIMEOUT_SECONDS * WDT_UNITS_PER_SECOND;
 
 /// Encoded `WDT_LENGTH` register value: timeout units in [15:5] | key in [4:0].
-const WDT_LENGTH_VAL: u32 = (WDT_TIMEOUT_UNITS << 5) | WDT_LENGTH_KEY;
+const WDT_LENGTH_VAL: u64 = (WDT_TIMEOUT_UNITS << 5) | WDT_LENGTH_KEY;
+
+// `WDT_LENGTH` has eleven timeout bits. Reject a canonical duration that the
+// physical register cannot represent instead of truncating it at the write.
+const _: () = assert!(WDT_TIMEOUT_UNITS <= 0x07ff);
+
+/// Narrow the statically range-checked timeout encoding for the 32-bit MMIO.
+fn wdt_length_value() -> u32 {
+    u32::try_from(WDT_LENGTH_VAL).unwrap_or_else(|_| {
+        unreachable!("WDT_LENGTH encoding was compile-time checked to fit in 16 bits")
+    })
+}
 
 /// Initialize the hardware watchdog with a 5-second timeout and start it.
 ///
@@ -120,7 +140,7 @@ pub unsafe fn init() {
     // timeout value.
     unsafe {
         // Step 1: program timeout before enabling
-        mmio::write32(WDT_LENGTH, WDT_LENGTH_VAL);
+        mmio::write32(WDT_LENGTH, wdt_length_value());
         // Start the new interval from a known full countdown. Mainline does
         // the same restart write after programming WDT_LENGTH.
         mmio::write32(WDT_RESTART, WDT_RESTART_KEY);
@@ -136,9 +156,8 @@ pub unsafe fn init() {
 
 /// Pet (restart) the watchdog, resetting the countdown to 5 seconds.
 ///
-/// Currently called unconditionally from every timer interrupt (10 ms), before
-/// scheduler work. #875 must gate it on verified scheduler/service-loop
-/// progress so the watchdog detects deadlocks rather than merely a stopped IRQ.
+/// Called only after the liveness gate accepts fresh scheduler and service-loop
+/// evidence, or while its bounded controlled-shutdown grace remains active.
 ///
 /// # Safety
 ///
@@ -149,6 +168,39 @@ pub unsafe fn pet() {
     // the countdown. No side effects beyond resetting the timer.
     unsafe {
         mmio::write32(WDT_RESTART, WDT_RESTART_KEY);
+    }
+}
+
+/// Observe a timer tick for parity with the QEMU watchdog model.
+///
+/// WHY: MT6739 hardware advances its own countdown. The QEMU backend needs an
+/// explicit tick observation to model that autonomous behavior; retaining the
+/// same call surface keeps the timer IRQ board-neutral.
+///
+/// # Safety
+///
+/// Must be called from the timer IRQ, matching the QEMU backend's exclusive
+/// model ownership. This hardware implementation performs no memory access.
+pub unsafe fn observe_tick(_now: u64) {}
+
+/// Request an immediate whole-system reboot through the watchdog block.
+///
+/// The caller must enter the bounded liveness shutdown grace before invoking
+/// this operation. If the reset write fails to take effect, ordinary timer
+/// IRQs keep servicing that grace until it expires, after which the watchdog
+/// countdown is deliberately allowed to reset the device.
+///
+/// # Safety
+///
+/// Writes MT6739 watchdog MMIO. Safe after [`init`] and MMIO mapping.
+pub unsafe fn request_reboot() {
+    // SAFETY: both addresses are registers in the mapped MT6739 watchdog
+    // block. Reasserting enabled reset mode preserves platform-owned fields;
+    // WDT_SWRST accepts only its documented key.
+    unsafe {
+        let current_mode = mmio::read32(WDT_MODE);
+        mmio::write32(WDT_MODE, mode_enable_value(current_mode));
+        mmio::write32(WDT_SWRST, WDT_SWRST_KEY);
     }
 }
 
@@ -183,6 +235,7 @@ mod tests {
             WDT_RESTART, 0x1000_7008,
             "WDT_RESTART must be at base + 0x08"
         );
+        assert_eq!(WDT_SWRST, 0x1000_7014, "WDT_SWRST must be at base + 0x14");
     }
 
     /// Verify the pet magic value matches the MT6739 BSP specification.
@@ -191,6 +244,10 @@ mod tests {
         // WHY: the magic value 0x1971 is required by the MT6739 WDT hardware
         // to accept a restart command. Any other value is ignored.
         assert_eq!(WDT_RESTART_KEY, 0x1971, "WDT_RESTART_KEY must be 0x1971");
+        assert_eq!(
+            WDT_SWRST_KEY, 0x1209,
+            "WDT_SWRST_KEY must match the MT6739 software-reset key"
+        );
     }
 
     /// Verify mode writes carry the full key and preserve unowned policy.
@@ -233,7 +290,7 @@ mod tests {
         assert_eq!(WDT_LENGTH_KEY, 0x08, "WDT_LENGTH write key must be 0x08");
         // Verify the full encoded value
         assert_eq!(
-            WDT_LENGTH_VAL,
+            wdt_length_value(),
             (320u32 << 5) | 0x08,
             "WDT_LENGTH_VAL must be timeout_units<<5 | 0x08"
         );
