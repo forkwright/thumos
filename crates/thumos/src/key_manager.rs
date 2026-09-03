@@ -685,6 +685,41 @@ mod tests {
     }
 
     #[test]
+    fn v1_kdf_matches_independent_pbkdf2_known_answer() {
+        // The gap the v1 fixture cannot close: it proves parse() routes a v1
+        // sector to whatever V1_KDF currently IS, not that V1_KDF's value is
+        // what real v1 devices were written with. This vector pins the value
+        // itself. Exact inputs: passphrase "thumos v1 known-answer" (21 ASCII
+        // bytes, no NUL), salt bytes 0x00..=0x1f in order, PBKDF2-HMAC-SHA256
+        // at exactly 100,000 iterations, dkLen 32 — the raw RFC 8018
+        // construction, which `derive_under` reaches with no personalization
+        // or domain separation (security.rs:635-639). Expected bytes derived
+        // independently of this crate: OpenSSL via Python's
+        // hashlib.pbkdf2_hmac('sha256', ...), cross-checked against a
+        // from-scratch RFC 2898 block composition in pure Python; both
+        // references agree on these bytes. A typo'd or silently repriced
+        // iteration count fails here instead of surfacing on a provisioned
+        // device as a rejected passphrase.
+        let salt: [u8; 32] = core::array::from_fn(|i| i as u8);
+        let expected: [u8; KEY_SIZE] = [
+            0xea, 0x68, 0xff, 0x8c, 0xcb, 0x19, 0x3a, 0x44, 0x65, 0xbb, 0x40, 0x5b, 0x20, 0x3d,
+            0xf0, 0x08, 0x68, 0x20, 0x01, 0xf9, 0xdb, 0x1e, 0xcf, 0x43, 0x53, 0x43, 0xa7, 0xba,
+            0xb7, 0x16, 0x5e, 0x5e,
+        ];
+        let derived = KeyManager::derive_from_passphrase(
+            b"thumos v1 known-answer",
+            &salt,
+            crate::secrets::V1_KDF,
+        )
+        .expect("derive under V1_KDF");
+        assert_eq!(
+            derived.as_bytes(),
+            &expected,
+            "V1_KDF must be PBKDF2-HMAC-SHA256 at exactly 100,000 iterations -- the parameters every v1 device's master key was derived with (#914)"
+        );
+    }
+
+    #[test]
     fn boot_verifier_is_deterministic_per_primary() {
         let primary = derive_test_primary(b"verifier determinism");
         let v1 = KeyManager::derive_boot_verifier(&primary).expect("derive verifier");
