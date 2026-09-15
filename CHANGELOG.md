@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2](https://github.com/forkwright/thumos/compare/v0.9.1...v0.9.2) (2026-09-12)
+
+
+### Bug Fixes
+
+* **deps:** update wnaf to 0.14.1 (0.14.0 yanked) ([#969](https://github.com/forkwright/thumos/issues/969)) ([4fa7c72](https://github.com/forkwright/thumos/commit/4fa7c722ccb9e5152df4ec287fa3482b9bf26198)), closes [#968](https://github.com/forkwright/thumos/issues/968)
+
 ## [0.9.1](https://github.com/forkwright/thumos/compare/v0.9.0...v0.9.1) (2026-09-03)
 
 
